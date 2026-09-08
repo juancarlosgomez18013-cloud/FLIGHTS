@@ -1,8 +1,8 @@
-# ✈️ FLIGHTS — vuelos baratos con alertas por WhatsApp
+# ✈️ FLIGHTS — vuelos baratos con alertas al celular
 
 Rastreador personal de vuelos baratos desde Bucaramanga (y desde Bogotá/Medellín para lo
 internacional). Corre gratis en GitHub Actions, busca precios en Google Flights, guarda el
-historial y te escribe al WhatsApp cuando hay una ganga.
+historial y te escribe por Telegram o WhatsApp cuando hay una ganga.
 
 No usa APIs de pago. No necesita servidor ni PC encendida.
 
@@ -13,7 +13,7 @@ No usa APIs de pago. No necesita servidor ni PC encendida.
   una vez al día, 9 meses adelante.
 - **Combos**: si lo internacional sale de Bogotá, te suma el BGA→BOG del día anterior o del mismo
   día y te muestra el total real desde Bucaramanga.
-- **Alertas por WhatsApp** cuando una ruta:
+- **Alertas al celular** (Telegram, WhatsApp o ntfy) cuando una ruta:
   - 🎯 baja de tu precio objetivo (`target_price` por grupo),
   - 📉 toca su mínimo histórico,
   - 🔻 cae más de un 15 % frente a la corrida anterior.
@@ -23,16 +23,34 @@ No usa APIs de pago. No necesita servidor ni PC encendida.
 
 ## Puesta en marcha (10 minutos)
 
-### 1. WhatsApp con CallMeBot (gratis)
+### 1. Elige por dónde recibir los avisos
 
-1. Agrega el número de CallMeBot a tus contactos y envíale el mensaje de activación que indica su
-   página: <https://www.callmebot.com/blog/free-api-whatsapp-messages/>
-2. Te responde con tu **apikey**.
-3. En GitHub: *Settings → Secrets and variables → Actions → New repository secret*:
-   - `CALLMEBOT_PHONE`: tu número con indicativo, sin `+` (ej. `573001234567`)
-   - `CALLMEBOT_APIKEY`: la clave que te dio el bot
+Se pueden activar varios canales a la vez; cada uno son dos secretos en GitHub
+(*Settings → Secrets and variables → Actions → New repository secret*).
 
-Sin estos secretos el sistema igual corre, pero imprime los avisos en el log en vez de enviarlos.
+**Telegram (recomendado: gratis, ilimitado, 2 minutos)**
+
+1. Escribe a [@BotFather](https://t.me/BotFather) en Telegram: `/newbot`, ponle nombre, copia el token.
+2. Escribe a [@userinfobot](https://t.me/userinfobot): te responde tu `Id`.
+3. Abre el chat con tu bot nuevo y dale *Start* (si no, el bot no puede escribirte).
+4. Secretos: `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`.
+
+**WhatsApp con Whapi.Cloud (sandbox gratis permanente, 150 mensajes/día)**
+
+1. Crea cuenta en <https://whapi.cloud>, crea un canal y escanea el QR desde WhatsApp
+   (*Dispositivos vinculados*). Puedes usar tu mismo número: te escribirás a ti mismo.
+2. Copia el token del canal.
+3. Secretos: `WHAPI_TOKEN` y `WHAPI_PHONE` (tu número con indicativo, sin `+`, ej. `573001234567`).
+
+Es una API no oficial de WhatsApp. Para mensajes a ti mismo el riesgo es bajo, pero existe.
+
+**WhatsApp con CallMeBot** (gratis, pero casi siempre "lleno"): si logras registrarte,
+secretos `CALLMEBOT_PHONE` y `CALLMEBOT_APIKEY`.
+
+**ntfy (push sin registro)**: instala la app ntfy, suscríbete a un tema con nombre difícil de
+adivinar y guarda el secreto `NTFY_TOPIC`.
+
+Sin ningún canal configurado el sistema igual corre, pero imprime los avisos en el log.
 
 ### 2. Permisos de Actions
 
@@ -62,7 +80,7 @@ python -m cheapflights run --mock --dry-run         # prueba sin tocar Google
 pytest
 ```
 
-Para enviar de verdad desde tu máquina, exporta `CALLMEBOT_PHONE` y `CALLMEBOT_APIKEY`.
+Para enviar de verdad desde tu máquina, exporta las mismas variables que los secretos (por ejemplo `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`).
 
 ## Ajustar a tu gusto: `config.yaml`
 
@@ -88,7 +106,7 @@ config.yaml ─▶ cli.run ─▶ search (fli → Google Flights, calendario de 
                          history.record()  ──▶ data/history.json (commit automático)
                               │
                               ▼
-                         alerts.evaluate() ──▶ notify (CallMeBot → WhatsApp)
+                         alerts.evaluate() ──▶ notify (Telegram / WhatsApp / ntfy)
                                    digest ──▶ resumen semanal por grupo
 ```
 

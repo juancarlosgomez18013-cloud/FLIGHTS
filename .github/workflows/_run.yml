@@ -9,10 +9,13 @@ on:
         required: true
         type: string
     secrets:
-      CALLMEBOT_PHONE:
-        required: false
-      CALLMEBOT_APIKEY:
-        required: false
+      TELEGRAM_BOT_TOKEN: { required: false }
+      TELEGRAM_CHAT_ID: { required: false }
+      WHAPI_TOKEN: { required: false }
+      WHAPI_PHONE: { required: false }
+      CALLMEBOT_PHONE: { required: false }
+      CALLMEBOT_APIKEY: { required: false }
+      NTFY_TOPIC: { required: false }
 
 permissions:
   contents: write
@@ -40,8 +43,13 @@ jobs:
 
       - name: Ejecutar
         env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WHAPI_TOKEN: ${{ secrets.WHAPI_TOKEN }}
+          WHAPI_PHONE: ${{ secrets.WHAPI_PHONE }}
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           FLI_TIMEOUT: "45"
         run: python -m cheapflights ${{ inputs.command }}
 

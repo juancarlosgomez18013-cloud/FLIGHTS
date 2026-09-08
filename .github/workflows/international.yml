@@ -11,6 +11,4 @@ jobs:
     uses: ./.github/workflows/_run.yml
     with:
       command: run --kind international
-    secrets:
-      CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
-      CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+    secrets: inherit
