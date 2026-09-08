@@ -1,0 +1,127 @@
+# Configuración del rastreador de vuelos baratos.
+# Todos los precios son en la moneda indicada (COP) y para UN adulto, solo ida.
+
+currency: COP
+country: CO      # gl= de Google Flights, decide el mercado y las aerolíneas mostradas
+language: es
+home: BGA        # tu aeropuerto: Palonegro, Bucaramanga
+
+search:
+  # Pausa entre rutas para no saturar a Google (segundos)
+  request_delay_seconds: 2.0
+  # Nunca buscar más allá de este número de días (Google no responde más de ~305)
+  max_days_ahead: 300
+
+alerts:
+  # Avisar si el mínimo de una ruta baja este porcentaje frente a la corrida anterior
+  drop_percent: 15
+  # Avisar cuando una ruta toca su mínimo histórico (necesita al menos 1 corrida previa)
+  new_low: true
+  # No repetir el mismo aviso (ruta + fecha + tipo) durante estas horas
+  cooldown_hours: 24
+
+digest:
+  # Cuántos destinos por grupo en el resumen semanal
+  top_n: 6
+
+# Rutas "alimentadoras": si vives en BGA y lo internacional sale desde BOG/MDE,
+# el sistema combina BGA->BOG + BOG->destino y te muestra el total.
+feeders:
+  - from: BGA
+    to: BOG
+  - from: BGA
+    to: MDE
+
+groups:
+  - name: Colombia
+    kind: domestic
+    origins: [BGA]
+    months_ahead: 6
+    # Precio objetivo por trayecto: si algo sale por debajo, aviso inmediato
+    target_price: 140000
+    destinations:
+      - BOG   # Bogotá
+      - MDE   # Medellín (Rionegro)
+      - EOH   # Medellín (Olaya Herrera, regionales)
+      - CTG   # Cartagena
+      - BAQ   # Barranquilla
+      - SMR   # Santa Marta
+      - CLO   # Cali
+      - PEI   # Pereira
+      - AXM   # Armenia
+      - MZL   # Manizales
+      - ADZ   # San Andrés
+      - CUC   # Cúcuta
+      - MTR   # Montería
+      - VUP   # Valledupar
+      - RCH   # Riohacha
+      - NVA   # Neiva
+      - PSO   # Pasto
+      - IBE   # Ibagué
+      - VVC   # Villavicencio
+      - LET   # Leticia
+      - APO   # Apartadó
+      - UIB   # Quibdó
+      - PPN   # Popayán
+      - FLA   # Florencia
+      - YOP   # Yopal
+      - AUC   # Arauca
+
+  - name: Sudamérica
+    kind: international
+    origins: [BOG, MDE]
+    months_ahead: 9
+    target_price: 500000
+    destinations:
+      - PTY   # Panamá
+      - LIM   # Lima
+      - UIO   # Quito
+      - GYE   # Guayaquil
+      - SCL   # Santiago de Chile
+      - EZE   # Buenos Aires
+      - GRU   # São Paulo
+      - GIG   # Río de Janeiro
+      - MVD   # Montevideo
+      - ASU   # Asunción
+      - LPB   # La Paz
+      - CCS   # Caracas
+
+  - name: Norteamérica y Caribe
+    kind: international
+    origins: [BOG, MDE]
+    months_ahead: 9
+    target_price: 600000
+    destinations:
+      - MEX   # Ciudad de México
+      - CUN   # Cancún
+      - MIA   # Miami
+      - FLL   # Fort Lauderdale
+      - MCO   # Orlando
+      - JFK   # Nueva York
+      - LAX   # Los Ángeles
+      - YYZ   # Toronto
+      - AUA   # Aruba
+      - CUR   # Curazao
+      - PUJ   # Punta Cana
+      - SDQ   # Santo Domingo
+      - SJU   # San Juan
+      - HAV   # La Habana
+      - SJO   # San José CR
+      - GUA   # Guatemala
+      - SAL   # San Salvador
+
+  - name: Europa
+    kind: international
+    origins: [BOG, MDE]
+    months_ahead: 9
+    target_price: 2200000
+    destinations:
+      - MAD   # Madrid
+      - BCN   # Barcelona
+      - LIS   # Lisboa
+      - CDG   # París
+      - AMS   # Ámsterdam
+      - LHR   # Londres
+      - FCO   # Roma
+      - FRA   # Fráncfort
+      - IST   # Estambul

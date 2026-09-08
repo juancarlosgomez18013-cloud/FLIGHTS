@@ -1,0 +1,16 @@
+name: Resumen semanal
+
+on:
+  schedule:
+    # Lunes 12:00 UTC = 07:00 Colombia
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+jobs:
+  digest:
+    uses: ./.github/workflows/_run.yml
+    with:
+      command: digest
+    secrets:
+      CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+      CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}

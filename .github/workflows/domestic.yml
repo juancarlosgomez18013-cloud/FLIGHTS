@@ -1,0 +1,16 @@
+name: Vuelos Colombia
+
+on:
+  schedule:
+    # Cada 6 horas (UTC). Colombia es UTC-5: 02:00, 08:00, 14:00 y 20:00 hora local.
+    - cron: "17 1,7,13,19 * * *"
+  workflow_dispatch:
+
+jobs:
+  domestic:
+    uses: ./.github/workflows/_run.yml
+    with:
+      command: run --kind domestic
+    secrets:
+      CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+      CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}

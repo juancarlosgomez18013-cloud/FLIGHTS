@@ -1,0 +1,16 @@
+name: Vuelos internacionales
+
+on:
+  schedule:
+    # Una vez al día, 09:40 UTC = 04:40 Colombia. Los precios internacionales se mueven más lento.
+    - cron: "40 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  international:
+    uses: ./.github/workflows/_run.yml
+    with:
+      command: run --kind international
+    secrets:
+      CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+      CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}

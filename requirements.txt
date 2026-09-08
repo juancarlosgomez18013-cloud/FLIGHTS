@@ -1,0 +1,5 @@
+flights==0.9.0
+click>=8.1
+rich>=13.0
+PyYAML>=6.0
+requests>=2.31
