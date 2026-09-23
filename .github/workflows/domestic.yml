@@ -5,9 +5,22 @@ on:
     # Cada 6 horas (UTC). Colombia es UTC-5: 02:00, 08:00, 14:00 y 20:00 hora local.
     - cron: "17 1,7,13,19 * * *"
   workflow_dispatch:
+  # También corre una vez cuando cambia el código o la configuración, para verificar al instante.
+  # Los commits del bot solo tocan data/, así que no se dispara a sí mismo.
+  push:
+    paths:
+      - "cheapflights/**"
+      - "config.yaml"
+      - "requirements.txt"
+      - ".github/workflows/_run.yml"
+      - ".github/workflows/domestic.yml"
 
 jobs:
   domestic:
+    # El workflow interno guarda data/history.json en el repo: necesita escribir.
+    # Sin esto GitHub rechaza la corrida al arrancar (startup_failure).
+    permissions:
+      contents: write
     uses: ./.github/workflows/_run.yml
     with:
       command: run --kind domestic
