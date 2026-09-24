@@ -28,6 +28,9 @@ def test_real_config_zones(config):
     assert europa.origins == ("BOG", "MDE") and europa.months_ahead == 9
     assert europa.nights == (6, 14) and europa.bags == 1
     assert config.zone("San Andrés").nights == (3, 7)  # ajuste por zona
+    assert costa.one_way and not europa.one_way and europa.one_way_routes() == []
+    assert costa.one_way_routes()[:2] == [Route("BGA", "CTG", (0, 0), 0), Route("CTG", "BGA", (0, 0), 0)]
+    assert Route("BGA", "CTG", (0, 0), 0).key == "BGA-CTG/ida/0m"
     assert costa.route("BGA", "CTG") == Route("BGA", "CTG", (2, 5), 0)
     assert costa.searches(True)[:2] == [Route("BGA", "CTG", (2, 5), 0), Route("BGA", "CTG", (2, 5), 1)]
     assert all(r.bags == 0 for r in costa.searches(False))
@@ -98,12 +101,13 @@ def test_nights_and_bags_defaults_and_overrides(tmp_path):
         "feeders: [{from: BGA, to: BOG}, {from: BGA, to: MDE}]\n"
         "zones:\n"
         "  - {name: A, destinations: {CTG: Cartagena}}\n"
-        "  - {name: B, nights: [1, 2], bags: no, destinations: {CLO: Cali}}\n"
+        "  - {name: B, nights: [1, 2], bags: no, one_way: false, destinations: {CLO: Cali}}\n"
         "  - {name: C, kind: international, destinations: {LIM: Lima}}\n"
     )
     c = load_config(_write(tmp_path, body))
     assert (c.zone("A").nights, c.zone("A").bags) == ((3, 4), 1)
     assert (c.zone("B").nights, c.zone("B").bags) == ((1, 2), 0)
+    assert c.zone("A").one_way and not c.zone("B").one_way and not c.zone("C").one_way
     assert (c.zone("C").nights, c.zone("C").bags) == ((7, 7), 1)  # un número = esa duración exacta; internacional con maleta
     assert c.feeder_nights == (7, 9)
     for bad in ("nights: {domestic: [5, 2]}\n", "nights: {domestic: [0, 3]}\n", "bags: {domestic: quizás}\n"):

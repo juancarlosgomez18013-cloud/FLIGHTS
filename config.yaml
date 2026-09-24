@@ -43,6 +43,16 @@ bags:
   domestic: false            # escapada corta: con la maleta de mano basta
   international: true        # viaje largo: casi siempre se lleva maleta
 
+# ── Solo ida (además de ida y vuelta) ────────────────────────────────
+#  true = también busca vuelos solo ida en los dos sentidos
+#  (Bucaramanga → destino y destino → Bucaramanga). Sirve para:
+#    · avisarte 🔥 cuando un tramo solo ida está súper barato
+#    · decirte si armar el viaje con dos tramos sueltos sale más barato
+#  Se puede cambiar por zona con `one_way: false`.
+one_way:
+  domestic: true
+  international: false
+
 # ── Cómo se decide qué es barato ─────────────────────────────────────
 #
 #  🔥 SÚPER BARATO → te llega un mensaje apenas lo encuentro.

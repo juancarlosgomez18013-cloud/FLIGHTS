@@ -25,7 +25,7 @@ from cheapflights.messages import (
 from cheapflights.notify import to_plain, to_telegram_html
 from cheapflights.search import RouteResult
 
-from .conftest import NOW, TODAY, fares
+from .conftest import NOW, TODAY, fares, route
 
 LEVELS = LevelSettings()
 ALLOWED_TELEGRAM_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "a", "code", "pre",
@@ -121,7 +121,7 @@ def test_one_or_two_alerts_use_detailed_cards(config, history):
     assert "🗓️" in text and "2 noches" in text and "6 noches" in text
     assert "suele costar unos $" in text and "ahorras" in text and "Ver en Google Flights" in text
     assert "Mismo precio saliendo en 1 fecha más" in text
-    assert "~" not in text and "Ida y vuelta" in text and "Solo ida" not in text
+    assert "~" not in text and "Precio por persona" in text and "SOLO IDA" not in text
     assert "through" in text  # el enlace abre la búsqueda de ida y vuelta
     assert_telegram_ok(text)
 
@@ -253,3 +253,31 @@ def test_plain_rendering_for_whatsapp():
         "• *Bogotá*: $1\n   👉 https://g.co/a?b=1&c=2\n👉 Ver en Google Flights: https://g.co/x?y=1"
     )
     assert "*" not in to_plain(markup, keep_bold=False)
+
+
+def test_one_way_alert_and_link(config):
+    zone = config.zone("Costa Caribe")
+    r = route("CTG", "BGA", (0, 0))
+    v = classify(r, {(d, d): p for (d, _), p in fares([55_000] + [180_000] * 40).items()}, "COP", zone, LEVELS, [], TODAY)
+    assert v.one_way and v.level == SUPER and v.alert_key == "solo-ida:CTG-BGA" and v.out == v.back
+    text = format_alerts(config, [v], TODAY)[0]
+    assert "🔥 *SÚPER BARATO · SOLO IDA* · 🏖️ Costa Caribe" in text
+    assert "*Cartagena → Bucaramanga*" in text and "*$55.000* solo ida · sin maleta" in text
+    assert "noches" not in text and "one+way" in text
+    assert_telegram_ok(text)
+
+
+def test_split_price_line_and_summary_one_way_section(config):
+    zone = config.zone("Costa Caribe")
+    rt = classify(zone.route("BGA", "BAQ"), fares([98_958, 99_000] + [300_000] * 40), "COP", zone, LEVELS, [], TODAY)
+    rt = replace(rt, split_price=80_000.0)
+    text = format_alerts(config, [rt], TODAY)[0]
+    assert "✂️ Armado con dos tramos solo ida: $80.000 (ahorras $18.958)" in text
+    ow = classify(route("BGA", "CTG", (0, 0)), {(d, d): p for (d, _), p in fares([50_000] + [180_000] * 40).items()}, "COP", zone, LEVELS, [], TODAY)
+    msgs = format_summary(config, {"domestic": [rt, ow]}, TODAY)
+    text = "\n".join(msgs)
+    assert text.index("🔥 *Súper barato*") < text.index("🎫 *Solo ida*")
+    assert "• 🔥 🏖️ *[Bucaramanga → Cartagena]" in text and "solo ida · sin maleta" in text
+    assert "armado con dos tramos solo ida: $80.000" in text
+    for m in msgs:
+        assert_telegram_ok(m)
