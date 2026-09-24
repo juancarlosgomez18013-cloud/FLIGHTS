@@ -1,0 +1,20 @@
+name: Probar avisos
+
+# Manda un mensaje de prueba a tu canal (Telegram/WhatsApp/ntfy).
+# Úsalo después de crear los secretos: Actions → Probar avisos → Run workflow.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/probar-avisos.yml"
+
+jobs:
+  probar:
+    # Los push de otras ramas no buscan ni avisan (evita avisos duplicados y choques en el historial).
+    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    permissions:
+      contents: write
+    uses: ./.github/workflows/_run.yml
+    with:
+      command: probar
+    secrets: inherit

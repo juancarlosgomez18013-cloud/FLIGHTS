@@ -1,17 +1,16 @@
-"""Envío de avisos por varios canales. Se activan con variables de entorno:
+"""Envío de mensajes por varios canales, configurados con variables de entorno:
 
-  Telegram (recomendado, gratis e ilimitado)
+  Telegram (recomendado: gratis e ilimitado)
       TELEGRAM_BOT_TOKEN  token de @BotFather
-      TELEGRAM_CHAT_ID    tu chat id (lo da @userinfobot)
+      TELEGRAM_CHAT_ID    tu Id (te lo da @userinfobot)
   WhatsApp vía Whapi.Cloud (sandbox gratis: 150 mensajes/día)
-      WHAPI_TOKEN         token del canal
-      WHAPI_PHONE         tu número con indicativo, sin +  (ej. 573001234567)
+      WHAPI_TOKEN, WHAPI_PHONE (con indicativo, sin +, ej. 573001234567)
   WhatsApp vía CallMeBot (gratis, pero suele estar lleno)
       CALLMEBOT_PHONE, CALLMEBOT_APIKEY
-  ntfy.sh (push a la app ntfy, sin registro)
-      NTFY_TOPIC          nombre de tema difícil de adivinar
+  ntfy.sh (notificación push, sin registro)
+      NTFY_TOPIC (y opcional NTFY_SERVER)
 
-Si hay varias configuradas, se envía por todas. Si no hay ninguna, imprime en consola.
+Si hay varios, se envía por todos. Si no hay ninguno, se imprime en consola.
 """
 
 from __future__ import annotations
@@ -20,19 +19,50 @@ import html
 import logging
 import os
 import re
+import time
 import urllib.parse
-from datetime import datetime
-from typing import Protocol
+from datetime import datetime, timezone
+from typing import Callable, Protocol
 
 import requests
 
-from .alerts import Alert
-
 logger = logging.getLogger(__name__)
 
-MAX_MESSAGE_CHARS = 1500  # los mensajes cortos se leen mejor en el celular
 TIMEOUT = 30.0
+LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+BOLD_RE = re.compile(r"\*([^*\n]+)\*")
 
+
+# -- conversión del marcado a cada canal ---------------------------------------
+
+def to_telegram_html(text: str) -> str:
+    """*negrita* → <b>, [texto](url) → <a href>. Escapa todo lo demás."""
+    escaped = html.escape(text, quote=False)
+    escaped = LINK_RE.sub(lambda m: f'<a href="{m.group(2).replace(chr(34), "%22")}">{m.group(1)}</a>', escaped)
+    return BOLD_RE.sub(r"<b>\1</b>", escaped)
+
+
+def to_plain(text: str, keep_bold: bool = True, inline_urls: bool = False) -> str:
+    """Texto plano. keep_bold: deja *negrita* (WhatsApp). inline_urls: pone la URL de los
+    enlaces que van dentro de una línea en la línea siguiente (para poder abrirlos en WhatsApp)."""
+    out = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        whole = LINK_RE.fullmatch(stripped)
+        if whole:
+            out.append(line[: len(line) - len(line.lstrip())] + f"{whole.group(1)}: {whole.group(2)}")
+            continue
+        urls = [m.group(2) for m in LINK_RE.finditer(line)]
+        out.append(LINK_RE.sub(r"\1", line))
+        if inline_urls:
+            out.extend(f"   👉 {u}" for u in urls)
+    result = "\n".join(out)
+    if not keep_bold:
+        result = BOLD_RE.sub(r"\1", result)
+    return result
+
+
+# -- canales ----------------------------------------------------------------------
 
 class Notifier(Protocol):
     name: str
@@ -40,62 +70,93 @@ class Notifier(Protocol):
     def send(self, text: str) -> bool: ...
 
 
-def _safe_get(session: requests.Session, name: str, url: str, **kwargs) -> requests.Response | None:
-    try:
-        return session.get(url, timeout=TIMEOUT, **kwargs)
-    except requests.RequestException as exc:
-        logger.error("%s no respondió: %s", name, exc)
-        return None
-
-
-def _safe_post(session: requests.Session, name: str, url: str, **kwargs) -> requests.Response | None:
-    try:
-        return session.post(url, timeout=TIMEOUT, **kwargs)
-    except requests.RequestException as exc:
-        logger.error("%s no respondió: %s", name, exc)
-        return None
-
-
 class ConsoleNotifier:
-    """Imprime en pantalla. Se usa en --dry-run o cuando no hay credenciales."""
+    """Imprime en pantalla. Se usa en --dry-run o cuando no hay canales."""
 
-    name = "consola"
+    name = "consola (sin canal configurado)"
 
     def __init__(self) -> None:
         self.sent: list[str] = []
 
     def send(self, text: str) -> bool:
         self.sent.append(text)
-        print("\n----- MENSAJE -----\n" + text + "\n-------------------")
+        print("\n----- MENSAJE -----\n" + to_plain(text, inline_urls=True) + "\n-------------------")
         return True
 
 
 class TelegramNotifier:
     name = "Telegram"
 
-    def __init__(self, token: str, chat_id: str, session: requests.Session | None = None):
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        session: requests.Session | None = None,
+        silent: Callable[[], bool] | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         self.token = token.strip()
         self.chat_id = chat_id.strip()
         self.session = session or requests.Session()
+        self.silent = silent or (lambda: False)
+        self.sleep = sleep
+        self.clock = time.monotonic
+        self._last_sent: float | None = None
 
-    @staticmethod
-    def to_html(text: str) -> str:
-        """Convierte *negrita* estilo WhatsApp a <b>negrita</b> y escapa el resto."""
-        escaped = html.escape(text, quote=False)
-        return re.sub(r"\*([^*\n]+)\*", r"<b>\1</b>", escaped)
+    def _redact(self, text: str) -> str:
+        return text.replace(self.token, "***") if self.token else text
+
+    def _post(self, payload: dict) -> requests.Response | None:
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        resp = None
+        for attempt in range(3):
+            # Telegram pide no más de 1 mensaje por segundo al mismo chat.
+            if self._last_sent is not None:
+                gap = self.clock() - self._last_sent
+                if gap < 1.1:
+                    self.sleep(1.1 - gap)
+            try:
+                resp = self.session.post(url, json=payload, timeout=TIMEOUT)
+            except requests.RequestException as exc:
+                logger.error("Telegram no respondió: %s", self._redact(str(exc)))
+                resp = None
+                if attempt < 2:
+                    self.sleep(3.0)
+                    continue
+                return None
+            finally:
+                self._last_sent = self.clock()
+            if resp.status_code == 429 and attempt < 2:
+                try:
+                    wait = float(resp.json().get("parameters", {}).get("retry_after", 5))
+                except (ValueError, AttributeError):
+                    wait = 5.0
+                if wait > 60:
+                    logger.error("Telegram pide esperar %.0f s: se abandona este mensaje", wait)
+                    return resp
+                self.sleep(wait + 1)
+                continue
+            return resp
+        return resp
 
     def send(self, text: str) -> bool:
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
             "chat_id": self.chat_id,
-            "text": self.to_html(text),
+            "text": to_telegram_html(text),
             "parse_mode": "HTML",
-            "disable_web_page_preview": True,
+            "link_preview_options": {"is_disabled": True},
+            "disable_notification": bool(self.silent()),
         }
-        resp = _safe_post(self.session, self.name, url, json=payload)
+        resp = self._post(payload)
+        if resp is not None and resp.status_code == 400 and "parse" in resp.text.lower():
+            # Si algún día el formato falla, mejor llegar sin negritas que no llegar.
+            logger.warning("Telegram rechazó el formato; se reenvía como texto simple")
+            payload.pop("parse_mode")
+            payload["text"] = to_plain(text, keep_bold=False)
+            resp = self._post(payload)
         ok = resp is not None and resp.status_code == 200
         if not ok and resp is not None:
-            logger.error("Telegram devolvió %s: %s", resp.status_code, resp.text[:200])
+            logger.error("Telegram devolvió %s: %s", resp.status_code, self._redact(resp.text[:300]))
         return ok
 
 
@@ -110,11 +171,19 @@ class WhapiNotifier:
         self.session = session or requests.Session()
 
     def send(self, text: str) -> bool:
-        url = "https://gate.whapi.cloud/messages/text"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
-        resp = _safe_post(self.session, self.name, url, headers=headers, json={"to": self.phone, "body": text})
-        ok = resp is not None and 200 <= resp.status_code < 300
-        if not ok and resp is not None:
+        try:
+            resp = self.session.post(
+                "https://gate.whapi.cloud/messages/text",
+                headers=headers,
+                json={"to": self.phone, "body": to_plain(text, inline_urls=True)},
+                timeout=TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.error("Whapi no respondió: %s", exc.__class__.__name__)
+            return False
+        ok = 200 <= resp.status_code < 300
+        if not ok:
             logger.error("Whapi devolvió %s: %s", resp.status_code, resp.text[:200])
         return ok
 
@@ -128,11 +197,15 @@ class CallMeBotNotifier:
         self.session = session or requests.Session()
 
     def send(self, text: str) -> bool:
-        params = {"phone": self.phone, "text": text, "apikey": self.apikey}
+        params = {"phone": self.phone, "text": to_plain(text, inline_urls=True), "apikey": self.apikey}
         url = "https://api.callmebot.com/whatsapp.php?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
-        resp = _safe_get(self.session, self.name, url)
-        ok = resp is not None and resp.status_code in (200, 203) and "error" not in resp.text.lower()[:200]
-        if not ok and resp is not None:
+        try:
+            resp = self.session.get(url, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            logger.error("CallMeBot no respondió: %s", exc.__class__.__name__)
+            return False
+        ok = resp.status_code in (200, 203) and "error" not in resp.text.lower()[:200]
+        if not ok:
             logger.error("CallMeBot devolvió %s: %s", resp.status_code, resp.text[:200])
         return ok
 
@@ -146,19 +219,23 @@ class NtfyNotifier:
         self.session = session or requests.Session()
 
     def send(self, text: str) -> bool:
-        title, _, body = text.partition("\n")
-        headers = {"Title": title.encode("utf-8").decode("latin-1", "ignore"), "Tags": "airplane"}
-        resp = _safe_post(self.session, self.name, f"{self.server}/{self.topic}", data=(body or title).encode("utf-8"), headers=headers)
-        return resp is not None and resp.status_code == 200
+        plain = to_plain(text, keep_bold=False)
+        title, _, body = plain.partition("\n")
+        payload = {"topic": self.topic, "title": title, "message": body.strip() or title, "tags": ["airplane"]}
+        try:
+            resp = self.session.post(self.server + "/", json=payload, timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            logger.error("ntfy no respondió: %s", exc.__class__.__name__)
+            return False
+        return resp.status_code == 200
 
 
 class MultiNotifier:
-    """Envía por todos los canales; devuelve True si al menos uno funcionó."""
-
-    name = "multi"
+    """Envía por todos los canales; True si al menos uno funcionó."""
 
     def __init__(self, notifiers: list[Notifier]):
         self.notifiers = notifiers
+        self.name = " + ".join(n.name for n in notifiers)
 
     def send(self, text: str) -> bool:
         results = [n.send(text) for n in self.notifiers]
@@ -168,11 +245,26 @@ class MultiNotifier:
         return any(results)
 
 
-def notifiers_from_env(env: dict[str, str] | None = None) -> list[Notifier]:
+def in_quiet_hours(quiet: tuple[int, int] | None, now: datetime | None = None) -> bool:
+    """¿Es de noche en Colombia (UTC−5) según [inicio, fin]?"""
+    if not quiet:
+        return False
+    from .config import COLOMBIA_TZ
+
+    hour = (now or datetime.now(timezone.utc)).astimezone(COLOMBIA_TZ).hour
+    start, end = quiet
+    if start == end:
+        return False
+    return start <= hour or hour < end if start > end else start <= hour < end
+
+
+def notifiers_from_env(env: dict[str, str] | None = None, quiet_hours: tuple[int, int] | None = None) -> list[Notifier]:
     env = os.environ if env is None else env
     found: list[Notifier] = []
     if env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID"):
-        found.append(TelegramNotifier(env["TELEGRAM_BOT_TOKEN"], env["TELEGRAM_CHAT_ID"]))
+        found.append(
+            TelegramNotifier(env["TELEGRAM_BOT_TOKEN"], env["TELEGRAM_CHAT_ID"], silent=lambda: in_quiet_hours(quiet_hours))
+        )
     if env.get("WHAPI_TOKEN") and env.get("WHAPI_PHONE"):
         found.append(WhapiNotifier(env["WHAPI_TOKEN"], env["WHAPI_PHONE"]))
     if env.get("CALLMEBOT_PHONE") and env.get("CALLMEBOT_APIKEY"):
@@ -182,77 +274,14 @@ def notifiers_from_env(env: dict[str, str] | None = None) -> list[Notifier]:
     return found
 
 
-def build_notifier(dry_run: bool = False) -> Notifier:
+def build_notifier(dry_run: bool = False, quiet_hours: tuple[int, int] | None = None) -> Notifier:
     if dry_run:
         return ConsoleNotifier()
-    found = notifiers_from_env()
+    found = notifiers_from_env(quiet_hours=quiet_hours)
     if not found:
-        logger.warning("Sin canales configurados (TELEGRAM_*, WHAPI_*, CALLMEBOT_*, NTFY_TOPIC): se imprime en consola")
         return ConsoleNotifier()
-    logger.info("Canales activos: %s", ", ".join(n.name for n in found))
     return found[0] if len(found) == 1 else MultiNotifier(found)
 
 
-# -- formato de mensajes ------------------------------------------------------
-
-def fmt_price(price: float, currency: str) -> str:
-    if currency == "COP":
-        return f"${price:,.0f} COP".replace(",", ".")
-    return f"{price:,.0f} {currency}"
-
-
-def fmt_date(day: str) -> str:
-    """'2026-10-12' -> 'lun 12 oct 2026'."""
-    d = datetime.strptime(day, "%Y-%m-%d")
-    dias = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
-    meses = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
-    return f"{dias[d.weekday()]} {d.day} {meses[d.month - 1]} {d.year}"
-
-
-def google_flights_link(origin: str, destination: str, day: str, currency: str, language: str, country: str) -> str:
-    q = f"Flights from {origin} to {destination} on {day} one way"
-    return "https://www.google.com/travel/flights?" + urllib.parse.urlencode(
-        {"q": q, "curr": currency, "hl": language, "gl": country}
-    )
-
-
-KIND_LABEL = {
-    "target": "🎯 Bajo tu precio objetivo",
-    "new_low": "📉 Mínimo histórico",
-    "drop": "🔻 Bajó fuerte",
-}
-
-
-def format_alert(alert: Alert, language: str, country: str) -> str:
-    lines = [
-        f"{KIND_LABEL[alert.kind]} · {alert.group}",
-        f"*{alert.origin} → {alert.destination}*: *{fmt_price(alert.price, alert.currency)}* el {fmt_date(alert.date)}",
-    ]
-    if alert.kind == "target":
-        lines.append(f"Objetivo: {fmt_price(alert.previous, alert.currency)}")
-    elif alert.kind == "new_low":
-        lines.append(f"Mínimo anterior: {fmt_price(alert.previous, alert.currency)}")
-    elif alert.kind == "drop":
-        pct = 100 * (alert.previous - alert.price) / alert.previous
-        lines.append(f"Antes: {fmt_price(alert.previous, alert.currency)} (−{pct:.0f}%)")
-    if alert.percentile is not None:
-        lines.append(f"Solo el {alert.percentile:.0f}% de las veces ha estado más barato")
-    lines.append(google_flights_link(alert.origin, alert.destination, alert.date, alert.currency, language, country))
-    return "\n".join(lines)
-
-
-def format_alerts_batch(alerts: list[Alert], language: str, country: str) -> list[str]:
-    """Agrupa varias alertas en pocos mensajes (máx ~1500 caracteres cada uno)."""
-    messages: list[str] = []
-    current: list[str] = []
-    size = 0
-    for alert in alerts:
-        block = format_alert(alert, language, country)
-        if current and size + len(block) + 2 > MAX_MESSAGE_CHARS:
-            messages.append("\n\n".join(current))
-            current, size = [], 0
-        current.append(block)
-        size += len(block) + 2
-    if current:
-        messages.append("\n\n".join(current))
-    return messages
+def is_real(notifier: Notifier) -> bool:
+    return not isinstance(notifier, ConsoleNotifier)

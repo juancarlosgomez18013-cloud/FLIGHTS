@@ -43,8 +43,11 @@ class Searcher(Protocol):
 class RateLimited(RuntimeError):
     """Google respondió con bloqueo o límite de peticiones."""
 
+    partial: list = []
+
 
 def date_window(months_ahead: int, max_days_ahead: int, today: date | None = None) -> tuple[date, date]:
+    """Desde mañana hasta `months_ahead` meses (máx. `max_days_ahead` días)."""
     today = today or date.today()
     start = today + timedelta(days=1)
     days = min(months_ahead * 30, max_days_ahead)
@@ -110,7 +113,8 @@ def search_routes(
             time.sleep(delay_seconds)
         try:
             results.append(searcher(origin, destination, from_date, to_date))
-        except RateLimited:
+        except RateLimited as exc:
+            exc.partial = results  # lo ya buscado no se pierde
             raise
         except Exception as exc:  # noqa: BLE001 - una ruta rota no debe tumbar la corrida
             logger.warning("Ruta %s-%s falló: %s", origin, destination, exc)

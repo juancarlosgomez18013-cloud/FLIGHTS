@@ -1,0 +1,16 @@
+name: Resumen diario
+
+on:
+  schedule:
+    # Todos los días 12:30 UTC = 7:30 a. m. hora Colombia
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  resumen:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/_run.yml
+    with:
+      command: resumen
+    secrets: inherit

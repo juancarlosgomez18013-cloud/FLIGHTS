@@ -1,0 +1,367 @@
+"""Textos de los mensajes. Todo en español y pensado para leerse en el celular.
+
+Marcado mínimo, que cada canal convierte (ver notify.py):
+  *negrita*            → negrita en Telegram y WhatsApp
+  [texto](https://…)   → enlace en Telegram; en WhatsApp se agrega la URL debajo
+"""
+
+from __future__ import annotations
+
+import urllib.parse
+from collections import Counter
+from dataclasses import dataclass
+from datetime import date
+
+from .config import KINDS, Config
+from .levels import CHEAP, SUPER, Verdict
+from .notify import to_plain
+from .places import flag
+
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+DIAS_CORTOS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+         "septiembre", "octubre", "noviembre", "diciembre"]
+MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+
+MAX_VISIBLE_CHARS = 3500  # Telegram permite 4096 caracteres visibles; dejamos margen
+FOOTER = "ℹ️ Solo ida · 1 adulto · sin maleta. Confirma el precio antes de comprar."
+KIND_HEADER = {"domestic": "🇨🇴 *COLOMBIA*", "international": "✈️ *INTERNACIONAL*"}
+LEVEL_TITLE = {SUPER: "🔥 *Súper barato*", CHEAP: "👍 *Barato*"}
+COMPACT_FROM = 3  # con 3 o más 🔥 a la vez, se manda una lista corta en vez de fichas
+
+
+# -- formatos básicos ---------------------------------------------------------
+
+def fmt_price(price: float, currency: str = "COP") -> str:
+    text = f"{price:,.0f}".replace(",", ".")
+    return f"${text}" if currency == "COP" else f"{text} {currency}"
+
+
+def fmt_approx(price: float, currency: str = "COP") -> str:
+    """Precio redondeado a miles: 'unos $124.000'."""
+    return "unos " + fmt_price(round(price, -3), currency)
+
+
+def fmt_date_long(day: str, today: date | None = None) -> str:
+    """'2026-10-29' → 'jueves 29 de octubre' (+ año si no es el actual)."""
+    d = date.fromisoformat(day)
+    text = f"{DIAS[d.weekday()]} {d.day} de {MESES[d.month - 1]}"
+    if today and d.year != today.year:
+        text += f" de {d.year}"
+    return text
+
+
+def fmt_date_short(day: str, today: date | None = None) -> str:
+    """'2026-10-29' → 'jue 29 oct' (+ año si no es el actual)."""
+    d = date.fromisoformat(day)
+    text = f"{DIAS_CORTOS[d.weekday()]} {d.day} {MESES_CORTOS[d.month - 1]}"
+    if today and d.year != today.year:
+        text += f" {d.year}"
+    return text
+
+
+def fmt_percent(value: float) -> str:
+    return f"{value:.0f} %"
+
+
+def flights_link(config: Config, origin: str, destination: str, day: str) -> str:
+    q = f"Flights from {origin} to {destination} on {day} one way"
+    return "https://www.google.com/travel/flights?" + urllib.parse.urlencode(
+        {"q": q, "curr": config.currency, "hl": config.language, "gl": config.country}
+    )
+
+
+def link(label: str, url: str) -> str:
+    return f"[{label}]({url})"
+
+
+def visible_len(text: str) -> int:
+    """Largo como lo cuenta Telegram: texto visible (sin URLs de enlaces) en unidades UTF-16."""
+    return len(to_plain(text, keep_bold=False).encode("utf-16-le")) // 2
+
+
+def destination_icon(v: Verdict) -> str:
+    """Bandera del país para internacionales; emoji de la zona para Colombia."""
+    return flag(v.destination) or v.zone.emoji
+
+
+# -- empaquetado en mensajes -----------------------------------------------------
+
+@dataclass
+class Piece:
+    """Un pedazo que no se parte. `context` se repite si arranca un mensaje nuevo."""
+
+    text: str
+    context: str = ""
+    verdicts: tuple[Verdict, ...] = ()
+
+
+def pack(pieces: list[Piece], limit: int = MAX_VISIBLE_CHARS, footer: str | None = FOOTER) -> list[tuple[str, list[Verdict]]]:
+    """Arma mensajes sin partir destinos. Devuelve (texto, veredictos que van en ese mensaje)."""
+    messages: list[tuple[str, list[Verdict]]] = []
+    lines: list[str] = []
+    verdicts: list[Verdict] = []
+
+    def flush():
+        nonlocal lines, verdicts
+        if lines:
+            messages.append(("\n".join(lines), verdicts))
+        lines, verdicts = [], []
+
+    for piece in pieces:
+        candidate = "\n".join(lines + [piece.text])
+        if lines and visible_len(candidate) > limit:
+            flush()
+            if piece.context:
+                lines.append(piece.context)
+        lines.append(piece.text)
+        verdicts.extend(piece.verdicts)
+    flush()
+    if footer and messages:
+        text, vs = messages[-1]
+        if visible_len(text + "\n\n" + footer) <= limit:
+            messages[-1] = (text + "\n\n" + footer, vs)
+        else:
+            messages.append((footer, []))
+    return messages
+
+
+def texts(packed: list[tuple[str, list[Verdict]]]) -> list[str]:
+    return [t for t, _ in packed]
+
+
+# -- detalles compartidos ------------------------------------------------------------
+
+def _other_dates_line(config: Config, v: Verdict, today: date) -> str | None:
+    n = config.summary.extra_dates
+    if v.same_price_dates:
+        shown = ", ".join(fmt_date_short(d, today) for d in v.same_price_dates[:n])
+        more = len(v.same_price_dates)
+        return f"📅 Mismo precio en {more} fecha{'s' if more != 1 else ''} más: {shown}{'…' if more > n else ''}"
+    if v.cheap_dates:
+        cheapest = sorted(v.cheap_dates, key=lambda dp: (dp[1], dp[0]))[:n]
+        shown = " · ".join(f"{fmt_date_short(d, today)} {fmt_price(p, v.currency)}" for d, p in sorted(cheapest))
+        return f"📅 También barato: {shown}"
+    return None
+
+
+def _savings_text(v: Verdict) -> str | None:
+    if v.savings_percent < 10:
+        return None
+    return f"cerca de esa fecha suele costar {fmt_approx(v.near_normal, v.currency)} (ahorras {fmt_percent(v.savings_percent)})"
+
+
+def _history_line(v: Verdict) -> str | None:
+    if v.stage != 2:
+        return None
+    if v.new_low and v.tracked_days:
+        return f"📉 El precio más bajo en {v.tracked_days:.0f} días de seguimiento"
+    if v.percentile is not None:
+        if v.percentile < 1:
+            return "📉 Casi nunca ha estado así de barato"
+        return f"📉 Solo el {fmt_percent(v.percentile)} de las veces ha estado así de barato"
+    return None
+
+
+def _feeder_lines(config: Config, v: Verdict, today: date) -> list[str]:
+    if v.zone.kind != "international" or v.origin == config.home:
+        return []
+    home = config.city(v.feeder_origin or config.home)
+    hub = config.city(v.origin)
+    if v.feeder_price is None:
+        return [f"➕ Más el vuelo {home} → {hub} (aún sin precio)"]
+    if v.feeder_estimated:
+        return [
+            f"➕ {home} → {hub}: {fmt_approx(v.feeder_price, v.currency)} (aprox.)",
+            f"🧾 *Total desde {home}: {fmt_approx(v.total, v.currency)}*",
+        ]
+    return [
+        f"➕ {home} → {hub}: {fmt_price(v.feeder_price, v.currency)} ({fmt_date_short(v.feeder_date, today)})",
+        f"🧾 *Total desde {home}: {fmt_price(v.total, v.currency)}*",
+    ]
+
+
+# -- aviso inmediato 🔥 ---------------------------------------------------------
+
+def format_super_alert(config: Config, v: Verdict, today: date) -> str:
+    lines = [
+        f"🔥 *SÚPER BARATO* · {v.zone.label}",
+        f"*{config.city(v.origin)} → {config.city(v.destination)}*",
+        f"💰 *{fmt_price(v.price, v.currency)}* · {fmt_date_long(v.date, today)}",
+    ]
+    lines.extend(_feeder_lines(config, v, today))
+    savings = _savings_text(v)
+    if savings:
+        lines.append("📊 " + savings[0].upper() + savings[1:])
+    for extra in (_history_line(v), _other_dates_line(config, v, today)):
+        if extra:
+            lines.append(extra)
+    lines.append(link("👉 Ver en Google Flights", flights_link(config, v.origin, v.destination, v.date)))
+    return "\n".join(lines)
+
+
+def _item(config: Config, v: Verdict, today: date) -> str:
+    """Una línea (y detalles cortos) por destino, para listas y el resumen."""
+    city = config.city(v.destination)
+    lines = [
+        f"• {destination_icon(v)} *{link(city, flights_link(config, v.origin, v.destination, v.date))}*: "
+        f"{fmt_price(v.price, v.currency)} · {fmt_date_short(v.date, today)}"
+    ]
+    details = []
+    if v.zone.kind == "international":
+        via = f"sale de {config.city(v.origin)}"
+        if v.feeder_price is not None:
+            via += f" · con el vuelo desde {config.city(v.feeder_origin or config.home)}: {fmt_approx(v.total, v.currency)}"
+        details.append(via)
+    savings = _savings_text(v)
+    if savings:
+        details.append(savings)
+    other = _other_dates_line(config, v, today)
+    if other:
+        details.append(other.removeprefix("📅 ").replace("Mismo precio", "mismo precio").replace("También barato", "también barato"))
+    lines.extend(f"   {d}" for d in details)
+    return "\n".join(lines)
+
+
+def format_alerts_packed(config: Config, verdicts: list[Verdict], today: date) -> list[tuple[str, list[Verdict]]]:
+    """Avisos 🔥 empaquetados en mensajes, con los veredictos que lleva cada uno."""
+    ordered = sorted(verdicts, key=lambda v: (-v.savings_percent, v.total))
+    if len(ordered) < COMPACT_FROM:
+        return pack([Piece(format_super_alert(config, v, today) + "\n", verdicts=(v,)) for v in ordered])
+    title = f"🔥 *{len(ordered)} vuelos súper baratos*"
+    pieces = [Piece(title + "\n")]
+    for kind in KINDS:
+        items = [v for v in ordered if v.zone.kind == kind]
+        if not items:
+            continue
+        header = f"{KIND_HEADER[kind]} · {_origin_text(config, kind)}"
+        pieces.append(Piece(header, context=title + " (sigue)"))
+        for v in items:
+            pieces.append(Piece(_item(config, v, today), context=f"{header} (sigue)", verdicts=(v,)))
+    return pack(pieces)
+
+
+def format_alerts(config: Config, verdicts: list[Verdict], today: date) -> list[str]:
+    return texts(format_alerts_packed(config, verdicts, today))
+
+
+# -- resumen diario ☀️ -----------------------------------------------------------
+
+def _origin_text(config: Config, kind: str) -> str:
+    if kind == "domestic":
+        return f"desde {config.city(config.home)}"
+    origins = dict.fromkeys(o for z in config.zones_of_kind(kind) for o in z.origins)
+    return "desde " + " o ".join(config.city(o) for o in origins)
+
+
+def _sort_key(v: Verdict):
+    return (-v.savings_percent, v.total)
+
+
+def format_summary(
+    config: Config,
+    verdicts_by_kind: dict[str, list[Verdict]],
+    today: date,
+    stale_days_by_kind: dict[str, float | None] | None = None,
+) -> list[str]:
+    """Resumen diario. `stale_days_by_kind[kind]` = días sin datos nuevos (None si está al día)."""
+    stale_days_by_kind = stale_days_by_kind or {}
+    limit = config.summary.max_per_section
+    pieces = [Piece(f"☀️ *Vuelos baratos de hoy* · {fmt_date_long(today.isoformat())}\n")]
+    anything = False
+    for kind in KINDS:
+        if not config.zones_of_kind(kind):
+            continue
+        header = f"{KIND_HEADER[kind]} · {_origin_text(config, kind)}"
+        pieces.append(Piece(header))
+        verdicts = verdicts_by_kind.get(kind) or []
+        stale = stale_days_by_kind.get(kind)
+        if stale is not None:
+            pieces.append(Piece(f"⚠️ Hace {stale:.0f} días que no llegan precios nuevos: puede que la búsqueda esté fallando."))
+        if not verdicts and stale is None:
+            pieces.append(Piece("Aún no hay datos. Llegarán con la próxima búsqueda."))
+        for level in (SUPER, CHEAP):
+            items = sorted((v for v in verdicts if v.level == level), key=_sort_key)
+            if not items:
+                continue
+            anything = True
+            title = LEVEL_TITLE[level]
+            pieces.append(Piece(title, context=f"{header} (sigue)"))
+            for v in items[:limit]:
+                pieces.append(Piece(_item(config, v, today), context=f"{header} (sigue)\n{title}"))
+            if len(items) > limit:
+                pieces.append(Piece(f"   …y {len(items) - limit} destinos más (salen en el plan del lunes)"))
+        if verdicts and not any(v.level for v in verdicts):
+            pieces.append(Piece("Nada barato por ahora. Te aviso apenas aparezca algo."))
+        pieces.append(Piece(""))
+    if not anything and not config.summary.send_when_empty:
+        return []
+    while pieces and pieces[-1].text == "":
+        pieces.pop()
+    return texts(pack(pieces))
+
+
+# -- plan semanal 📅 -------------------------------------------------------------
+
+def best_month(calendar: dict[str, float], cheap_limit: float, today: date) -> tuple[str, int] | None:
+    """Mes con más fechas baratas (≤ cheap_limit). Ignora el mes actual si le quedan <15 días."""
+    counts: Counter[str] = Counter()
+    for d, p in calendar.items():
+        if d > today.isoformat() and p and float(p) <= cheap_limit:
+            counts[d[:7]] += 1
+    current = today.isoformat()[:7]
+    days_left = 31 - today.day
+    if days_left < 15:
+        counts.pop(current, None)
+    if not counts:
+        return None
+    month, n = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    y, m = (int(x) for x in month.split("-"))
+    return MESES[m - 1] + (f" {y}" if y != today.year else ""), n
+
+
+def format_plan(config: Config, rows_by_kind: dict[str, list[tuple[Verdict, tuple[str, int] | None]]], today: date) -> list[str]:
+    """rows = [(destino más barato de la zona, (mes con más fechas baratas, cuántas))]."""
+    pieces = [Piece("📅 *Plan de viajes* · lo más barato de los próximos meses\n")]
+    for kind in KINDS:
+        rows = rows_by_kind.get(kind)
+        if rows is None:
+            continue
+        header = f"{KIND_HEADER[kind]} · {_origin_text(config, kind)}"
+        pieces.append(Piece(header))
+        if not rows:
+            pieces.append(Piece("Aún no hay datos."))
+        for v, month in rows:
+            city = config.city(v.destination)
+            place = "" if city == v.zone.name else f"{city} "
+            mark = {SUPER: " 🔥", CHEAP: " 👍"}.get(v.level, "")
+            lines = [f"{v.zone.emoji} *{v.zone.name}*: {place}{fmt_price(v.price, v.currency)} · {fmt_date_short(v.date, today)}{mark}"]
+            if v.zone.kind == "international":
+                via = f"   sale de {config.city(v.origin)}"
+                if v.feeder_price is not None:
+                    via += f" · con el vuelo desde {config.city(v.feeder_origin or config.home)}: {fmt_approx(v.total, v.currency)}"
+                lines.append(via)
+            if month and month[1] >= 3:  # con 1 o 2 fechas no dice nada útil
+                lines.append(f"   🗓️ Más fechas baratas en {month[0]} ({month[1]} días)")
+            pieces.append(Piece("\n".join(lines), context=f"{header} (sigue)"))
+        pieces.append(Piece(""))
+    while pieces and pieces[-1].text == "":
+        pieces.pop()
+    return texts(pack(pieces))
+
+
+# -- prueba ✅ --------------------------------------------------------------------
+
+def format_test(config: Config, sample: Verdict | None, today: date) -> list[str]:
+    intro = (
+        "✅ *Prueba: el bot de vuelos funciona*\n"
+        "Si ves este mensaje, los avisos te van a llegar aquí.\n\n"
+        "🔥 *Súper barato* → te escribo apenas lo encuentro (reviso Colombia cada 6 horas e internacional cada mañana).\n"
+        "☀️ *Resumen* → todos los días a las 7:30 a. m., con lo 🔥 y lo 👍 barato.\n"
+        "📅 *Plan de viajes* → los lunes."
+    )
+    pieces = [Piece(intro + "\n")]
+    if sample:
+        pieces.append(Piece("Así se ve un aviso (ejemplo con precios reales guardados):\n"))
+        pieces.append(Piece(format_super_alert(config, sample, today)))
+    return texts(pack(pieces))

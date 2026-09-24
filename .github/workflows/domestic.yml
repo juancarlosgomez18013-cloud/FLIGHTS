@@ -2,8 +2,8 @@ name: Vuelos Colombia
 
 on:
   schedule:
-    # Cada 6 horas (UTC). Colombia es UTC-5: 02:00, 08:00, 14:00 y 20:00 hora local.
-    - cron: "17 1,7,13,19 * * *"
+    # Cada 6 horas. Hora Colombia (UTC−5): 6:17 a. m., 12:17 p. m., 6:17 p. m. y 12:17 a. m.
+    - cron: "17 11,17,23,5 * * *"
   workflow_dispatch:
   # También corre una vez cuando cambia el código o la configuración, para verificar al instante.
   # Los commits del bot solo tocan data/, así que no se dispara a sí mismo.
@@ -17,11 +17,13 @@ on:
 
 jobs:
   domestic:
+    # Los push de otras ramas no buscan ni avisan (evita avisos duplicados y choques en el historial).
+    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
     # El workflow interno guarda data/history.json en el repo: necesita escribir.
     # Sin esto GitHub rechaza la corrida al arrancar (startup_failure).
     permissions:
       contents: write
     uses: ./.github/workflows/_run.yml
     with:
-      command: run --kind domestic
+      command: buscar --tipo nacional
     secrets: inherit

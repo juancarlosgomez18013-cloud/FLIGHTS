@@ -1,0 +1,16 @@
+name: Plan semanal
+
+on:
+  schedule:
+    # Lunes 13:07 UTC = 8:07 a. m. hora Colombia (minuto poco congestionado en GitHub)
+    - cron: "7 13 * * 1"
+  workflow_dispatch:
+
+jobs:
+  plan:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/_run.yml
+    with:
+      command: plan
+    secrets: inherit

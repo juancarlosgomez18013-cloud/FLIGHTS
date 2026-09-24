@@ -1,127 +1,241 @@
-# Configuración del rastreador de vuelos baratos.
-# Todos los precios son en la moneda indicada (COP) y para UN adulto, solo ida.
+# ════════════════════════════════════════════════════════════════════
+#  Rastreador de vuelos baratos · configuración
+#
+#  Todos los precios son en pesos colombianos, SOLO IDA, 1 adulto,
+#  sin maleta (la tarifa más básica que muestra Google Flights).
+#
+#  Para cambiar algo, edita este archivo en GitHub y guarda (commit):
+#  el sistema lo toma solo en la siguiente búsqueda.
+# ════════════════════════════════════════════════════════════════════
 
+home: BGA          # tu aeropuerto: Bucaramanga (Palonegro)
 currency: COP
-country: CO      # gl= de Google Flights, decide el mercado y las aerolíneas mostradas
+country: CO        # mercado de Google Flights (qué aerolíneas y precios muestra)
 language: es
-home: BGA        # tu aeropuerto: Palonegro, Bucaramanga
+
+# Desde dónde se busca cada tipo de vuelo
+origins:
+  domestic: [BGA]            # nacionales: salen de Bucaramanga
+  international: [BOG, MDE]  # internacionales: salen de Bogotá o Medellín
+                             # (el aviso te suma el vuelo desde Bucaramanga)
+
+# Cuántos meses hacia adelante mirar
+months_ahead:
+  domestic: 6
+  international: 9
+
+# ── Cómo se decide qué es barato ─────────────────────────────────────
+#
+#  🔥 SÚPER BARATO → te llega un mensaje apenas lo encuentro.
+#  👍 BARATO       → aparece en el resumen diario de las 7:30 a. m.
+#
+#  "Precio normal" de una ruta = lo que cuesta la mayoría de sus fechas.
+#
+#  Etapa 1 (primeras semanas): cada ruta se compara con sus otras fechas.
+#  Etapa 2 (automática cuando la ruta ya tiene historial suficiente):
+#     se compara con lo que esa ruta ha costado en el tiempo.
+#
+#  Además puedes fijar tus propios precios por destino (ver ZONAS abajo).
+levels:
+  cheap_below_normal: 20        # 👍 si está 20 % o más bajo el precio normal
+  super_below_normal: 25        # 🔥 si está 25 % o más bajo el precio normal…
+  super_below_cheap_dates: 15   #    …y 15 % bajo las fechas más baratas de siempre
+                                #    (así la tarifa promo de todos los días no cuenta como 🔥)
+  history_min_days: 14          # días de seguimiento antes de pasar a la etapa 2
+  history_min_runs: 20          # y mínimo de búsquedas guardadas
+  super_percentile: 10          # etapa 2: 🔥 si está en el 10 % más barato de lo visto…
+  super_min_discount: 20        #    …y al menos 20 % bajo lo que suele costar
+  cheap_percentile: 25          # etapa 2: 👍 si está en el 25 % más barato de lo visto…
+  cheap_min_discount: 10        #    …y al menos 10 % bajo lo que suele costar
+
+# ── Avisos 🔥 ────────────────────────────────────────────────────────
+#  Cada oferta se avisa una vez. Se vuelve a avisar si baja otro 5 %,
+#  o si desaparece y después vuelve a aparecer.
+alerts:
+  repeat_if_drops_percent: 5
+  quiet_hours: [22, 6]          # de 10 p. m. a 6 a. m. llegan sin sonido (Telegram)
+
+# ── Resumen diario (🔥 y 👍) ─────────────────────────────────────────
+summary:
+  max_per_section: 8            # máximo de destinos por sección
+  extra_dates: 3                # cuántas otras fechas baratas mostrar por destino
+  send_when_empty: true         # si no hay nada barato, igual manda un mensaje corto
 
 search:
-  # Pausa entre rutas para no saturar a Google (segundos)
-  request_delay_seconds: 2.0
-  # Nunca buscar más allá de este número de días (Google no responde más de ~305)
+  request_delay_seconds: 2.0    # pausa entre rutas para que Google no bloquee
   max_days_ahead: 300
 
-alerts:
-  # Avisar si el mínimo de una ruta baja este porcentaje frente a la corrida anterior
-  drop_percent: 15
-  # Avisar cuando una ruta toca su mínimo histórico (necesita al menos 1 corrida previa)
-  new_low: true
-  # No repetir el mismo aviso (ruta + fecha + tipo) durante estas horas
-  cooldown_hours: 24
-
-digest:
-  # Cuántos destinos por grupo en el resumen semanal
-  top_n: 6
-
-# Rutas "alimentadoras": si vives en BGA y lo internacional sale desde BOG/MDE,
-# el sistema combina BGA->BOG + BOG->destino y te muestra el total.
+# Vuelos desde Bucaramanga que se suman a los internacionales para dar el total.
+# Deben estar en una zona que se busque tantos meses como los internacionales.
 feeders:
   - from: BGA
     to: BOG
   - from: BGA
     to: MDE
 
-groups:
-  - name: Colombia
+# ════════════════════════════════════════════════════════════════════
+#  ZONAS
+#
+#  Cada destino es "CÓDIGO: Ciudad". Si quieres un precio fijo propio
+#  (además de la comparación automática), escríbelo así:
+#
+#      CTG: {ciudad: Cartagena, super_barato: 80000, barato: 100000}
+#
+#  Con eso, cualquier fecha a 80.000 o menos es 🔥 y a 100.000 o menos es 👍.
+# ════════════════════════════════════════════════════════════════════
+zones:
+
+  # ─────────────── COLOMBIA (desde Bucaramanga) ───────────────
+
+  - name: Bogotá
+    emoji: "🏙️"
     kind: domestic
-    origins: [BGA]
-    months_ahead: 6
-    # Precio objetivo por trayecto: si algo sale por debajo, aviso inmediato
-    target_price: 140000
+    months_ahead: 9              # 9 meses: se usa para sumar el vuelo a los internacionales
     destinations:
-      - BOG   # Bogotá
-      - MDE   # Medellín (Rionegro)
-      - EOH   # Medellín (Olaya Herrera, regionales)
-      - CTG   # Cartagena
-      - BAQ   # Barranquilla
-      - SMR   # Santa Marta
-      - CLO   # Cali
-      - PEI   # Pereira
-      - AXM   # Armenia
-      - MZL   # Manizales
-      - ADZ   # San Andrés
-      - CUC   # Cúcuta
-      - MTR   # Montería
-      - VUP   # Valledupar
-      - RCH   # Riohacha
-      - NVA   # Neiva
-      - PSO   # Pasto
-      - IBE   # Ibagué
-      - VVC   # Villavicencio
-      - LET   # Leticia
-      - APO   # Apartadó
-      - UIB   # Quibdó
-      - PPN   # Popayán
-      - FLA   # Florencia
-      - YOP   # Yopal
-      - AUC   # Arauca
+      BOG: Bogotá
 
-  - name: Sudamérica
-    kind: international
-    origins: [BOG, MDE]
-    months_ahead: 9
-    target_price: 500000
+  - name: Medellín y Antioquia
+    emoji: "🌸"
+    kind: domestic
+    months_ahead: 9              # 9 meses: se usa para sumar el vuelo a los internacionales
     destinations:
-      - PTY   # Panamá
-      - LIM   # Lima
-      - UIO   # Quito
-      - GYE   # Guayaquil
-      - SCL   # Santiago de Chile
-      - EZE   # Buenos Aires
-      - GRU   # São Paulo
-      - GIG   # Río de Janeiro
-      - MVD   # Montevideo
-      - ASU   # Asunción
-      - LPB   # La Paz
-      - CCS   # Caracas
+      MDE: Medellín
+      EOH: Medellín (Olaya Herrera)
+      APO: Apartadó
 
-  - name: Norteamérica y Caribe
-    kind: international
-    origins: [BOG, MDE]
-    months_ahead: 9
-    target_price: 600000
+  - name: Costa Caribe
+    emoji: "🏖️"
+    kind: domestic
     destinations:
-      - MEX   # Ciudad de México
-      - CUN   # Cancún
-      - MIA   # Miami
-      - FLL   # Fort Lauderdale
-      - MCO   # Orlando
-      - JFK   # Nueva York
-      - LAX   # Los Ángeles
-      - YYZ   # Toronto
-      - AUA   # Aruba
-      - CUR   # Curazao
-      - PUJ   # Punta Cana
-      - SDQ   # Santo Domingo
-      - SJU   # San Juan
-      - HAV   # La Habana
-      - SJO   # San José CR
-      - GUA   # Guatemala
-      - SAL   # San Salvador
+      CTG: Cartagena
+      BAQ: Barranquilla
+      SMR: Santa Marta
+      RCH: Riohacha
+      VUP: Valledupar
+      MTR: Montería
+
+  - name: San Andrés
+    emoji: "🐠"
+    kind: domestic
+    destinations:
+      ADZ: San Andrés
+
+  - name: Eje Cafetero
+    emoji: "☕"
+    kind: domestic
+    destinations:
+      PEI: Pereira
+      AXM: Armenia
+      MZL: Manizales
+
+  - name: Cali y el suroccidente
+    emoji: "💃"
+    kind: domestic
+    destinations:
+      CLO: Cali
+      UIB: Quibdó
+      PPN: Popayán
+      PSO: Pasto
+
+  - name: Cúcuta y los Llanos
+    emoji: "🌄"
+    kind: domestic
+    destinations:
+      CUC: Cúcuta
+      AUC: Arauca
+      EYP: Yopal
+      VVC: Villavicencio
+
+  - name: Tolima, Huila y Caquetá
+    emoji: "⛰️"
+    kind: domestic
+    destinations:
+      IBE: Ibagué
+      NVA: Neiva
+      FLA: Florencia
+
+  - name: Amazonas
+    emoji: "🌳"
+    kind: domestic
+    destinations:
+      LET: Leticia
+
+  # ─────────── INTERNACIONAL (desde Bogotá o Medellín) ───────────
+
+  - name: Panamá y Centroamérica
+    emoji: "🌎"
+    kind: international
+    destinations:
+      PTY: Ciudad de Panamá
+      SJO: San José, Costa Rica
+      GUA: Ciudad de Guatemala
+      SAL: San Salvador, El Salvador
+
+  - name: Islas del Caribe
+    emoji: "🌴"
+    kind: international
+    destinations:
+      AUA: Aruba
+      CUR: Curazao
+      PUJ: Punta Cana, Rep. Dominicana
+      SDQ: Santo Domingo, Rep. Dominicana
+      SJU: San Juan, Puerto Rico
+      HAV: La Habana, Cuba
+
+  - name: México
+    emoji: "🇲🇽"
+    kind: international
+    destinations:
+      MEX: Ciudad de México
+      CUN: Cancún, México
+
+  - name: Estados Unidos y Canadá
+    emoji: "🗽"
+    kind: international
+    destinations:
+      MIA: Miami, EE. UU.
+      FLL: Fort Lauderdale, EE. UU.
+      MCO: Orlando, EE. UU.
+      JFK: Nueva York, EE. UU.
+      LAX: Los Ángeles, EE. UU.
+      YYZ: Toronto, Canadá
+
+  - name: Perú, Ecuador, Bolivia y Venezuela
+    emoji: "🏔️"
+    kind: international
+    destinations:
+      LIM: Lima, Perú
+      UIO: Quito, Ecuador
+      GYE: Guayaquil, Ecuador
+      LPB: La Paz, Bolivia
+      CCS: Caracas, Venezuela
+
+  - name: Brasil
+    emoji: "🇧🇷"
+    kind: international
+    destinations:
+      GRU: São Paulo, Brasil
+      GIG: Río de Janeiro, Brasil
+
+  - name: Chile, Argentina, Uruguay y Paraguay
+    emoji: "🧉"
+    kind: international
+    destinations:
+      SCL: Santiago de Chile
+      EZE: Buenos Aires, Argentina
+      MVD: Montevideo, Uruguay
+      ASU: Asunción, Paraguay
 
   - name: Europa
+    emoji: "🏰"
     kind: international
-    origins: [BOG, MDE]
-    months_ahead: 9
-    target_price: 2200000
     destinations:
-      - MAD   # Madrid
-      - BCN   # Barcelona
-      - LIS   # Lisboa
-      - CDG   # París
-      - AMS   # Ámsterdam
-      - LHR   # Londres
-      - FCO   # Roma
-      - FRA   # Fráncfort
-      - IST   # Estambul
+      MAD: Madrid, España
+      BCN: Barcelona, España
+      LIS: Lisboa, Portugal
+      CDG: París, Francia
+      AMS: Ámsterdam, Países Bajos
+      LHR: Londres, Reino Unido
+      FCO: Roma, Italia
+      FRA: Fráncfort, Alemania
+      IST: Estambul, Turquía

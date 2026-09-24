@@ -16,13 +16,15 @@ on:
       CALLMEBOT_PHONE: { required: false }
       CALLMEBOT_APIKEY: { required: false }
       NTFY_TOPIC: { required: false }
+      NTFY_SERVER: { required: false }
 
 permissions:
   contents: write
 
-# Nunca dos corridas a la vez: ambas escriben data/history.json.
+# Las búsquedas no corren a la vez (todas reescriben el historial). Resumen, plan y prueba
+# van aparte: si compartieran la cola, GitHub cancelaría en silencio la que quede pendiente.
 concurrency:
-  group: cheapflights-data
+  group: ${{ startsWith(inputs.command, 'buscar') && 'cheapflights-data' || format('cheapflights-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
@@ -50,6 +52,7 @@ jobs:
           CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           FLI_TIMEOUT: "45"
         run: python -m cheapflights ${{ inputs.command }}
 
