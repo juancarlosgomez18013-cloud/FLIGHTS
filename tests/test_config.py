@@ -31,6 +31,7 @@ def test_real_config_zones(config):
     assert costa.one_way and europa.one_way and len(europa.one_way_routes()) == 2 * 2 * 9  # 2 hubs × 9 destinos × 2 sentidos
     assert costa.one_way_routes()[:2] == [Route("BGA", "CTG", (0, 0), 0), Route("CTG", "BGA", (0, 0), 0)]
     assert Route("BGA", "CTG", (0, 0), 0).key == "BGA-CTG/ida/0m"
+    assert all(r.origin == "BGA" for r in costa.outbound_one_way_routes()) and len(costa.outbound_one_way_routes()) == 6
     assert costa.route("BGA", "CTG") == Route("BGA", "CTG", (2, 5), 0)
     assert costa.searches(True)[:2] == [Route("BGA", "CTG", (2, 5), 0), Route("BGA", "CTG", (2, 5), 1)]
     assert all(r.bags == 0 for r in costa.searches(False))

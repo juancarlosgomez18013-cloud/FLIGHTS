@@ -184,3 +184,25 @@ def test_armado_trip_wins_and_its_legs_are_not_alerted_twice(config, history, mo
     assert r.alerted[0].legs == (20_000, 25_000) and r.alerted[0].price == 45_000
     assert "VIAJE ARMADO" in n.sent[0] and "🛫 Ida:" in n.sent[0]
     assert history.runs("BGA-BOG/2-5n/0m/armado")[-1]["min_price"] == 45_000
+
+
+def test_return_legs_alone_are_never_alerted_nor_listed(config, history, monkeypatch):
+    """Un regreso suelto (San Andrés → Bucaramanga) no sirve si uno está en Bucaramanga."""
+    monkeypatch.setattr("cheapflights.cli.is_real", lambda n: isinstance(n, RealNotifier))
+    history.mark_alerted("solo-ida:ADZ-BGA", 1.0, "2026-10-01", "2026-10-01", "ADZ-BGA/ida/0m", NOW)  # aviso viejo
+
+    def search(route, start, end):
+        if route.one_way and route.pair == "ADZ-BGA":  # regreso regalado; ida y vuelta normal, caro
+            f = {((TODAY + timedelta(days=i)).isoformat(),) * 2: 400_000.0 for i in range(1, 60)}
+            f[((TODAY + timedelta(days=30)).isoformat(),) * 2] = 50_000.0
+            return RouteResult(route, f)
+        return _searcher({"BGA-ADZ": [900_000] * 60})(route, start, end) if not route.one_way else RouteResult(route, {})
+
+    n = RealNotifier()
+    r = run_zones(config, [config.zone("San Andrés")], history, search, n, delay=0, now=NOW)
+    assert all(v.alert_key != "solo-ida:ADZ-BGA" for v in r.alerted) and not n.sent
+    assert "solo-ida:ADZ-BGA" not in history.data["alerts"]
+    from cheapflights.summary import summary_data
+
+    by_kind, _ = summary_data(config, history, NOW)
+    assert all(v.pair != "ADZ-BGA" for v in by_kind["domestic"])

@@ -115,6 +115,11 @@ class Zone:
                     out += [Route(o, d, ONE_WAY, self.bags), Route(d, o, ONE_WAY, self.bags)]
         return out
 
+    def outbound_one_way_routes(self) -> list[Route]:
+        """Los tramos solo ida que salen de casa (o del hub): los únicos que se avisan solos.
+        Los de regreso (destino → casa) solo sirven para armar el viaje."""
+        return [r for r in self.one_way_routes() if r.origin in self.origins]
+
     def searches(self, both_bag_prices: bool) -> list[Route]:
         """Todo lo que se consulta a Google: la búsqueda que decide y, si se pide, la otra maleta."""
         out: list[Route] = []
