@@ -298,23 +298,73 @@ def google_searcher(
 SearchJob = tuple[Route, date, date]  # (ruta, primera fecha de ida, última fecha de ida)
 
 
+class QuietBlockGuard:
+    """Detecta cuando Google deja de dar precios sin avisar (responde vacío en vez de HTTP 429).
+
+    Si varias búsquedas seguidas vuelven vacías, repite una búsqueda corta que sí dio precios al
+    inicio de la corrida (el "testigo"). Si el testigo también sale vacío, es un bloqueo: espera y
+    repite las vacías. Si el testigo trae precios, las vacías son rutas sin vuelos de verdad.
+    """
+
+    def __init__(self, searcher: "Searcher", streak: int = 4, wait_seconds: float = 90.0, max_waits: int = 3,
+                 sleep: Callable[[float], None] = time.sleep):
+        self.searcher, self.streak, self.wait_seconds, self.max_waits, self.sleep = searcher, streak, wait_seconds, max_waits, sleep
+        self.witness: SearchJob | None = None
+        self.waits_done = 0
+
+    def saw_prices(self, job: SearchJob) -> None:
+        if self.witness is None:
+            route, start, end = job
+            self.witness = (route, start, min(end, start + timedelta(days=chunk_days(route.nights) - 1)))
+
+    def blocked(self) -> bool:
+        return self.witness is not None and not self.searcher(*self.witness).fares
+
+    def wait(self) -> None:
+        if self.waits_done >= self.max_waits or self.wait_seconds <= 0:
+            raise RateLimited("Google dejó de dar precios sin avisar (bloqueo silencioso)")
+        self.waits_done += 1
+        logger.warning("Google dejó de dar precios sin avisar. Espera %.0f s y repite (%d/%d).",
+                       self.wait_seconds, self.waits_done, self.max_waits)
+        self.sleep(self.wait_seconds)
+
+
 def search_routes(
     jobs: list[SearchJob],
     searcher: Searcher,
     delay_seconds: float = 0.0,
     on_error: Callable[[str, Exception], None] | None = None,
+    guard: QuietBlockGuard | None = None,
 ) -> list[RouteResult]:
     """Busca varias rutas en serie, con pausa entre ellas.
 
     Un error en una ruta no detiene las demás, salvo `RateLimited`, que sí aborta
-    porque insistir solo empeora el bloqueo.
+    porque insistir solo empeora el bloqueo. Con `guard`, un bloqueo silencioso de Google
+    (respuestas vacías) se detecta, se espera y se repiten las búsquedas vacías.
     """
     results: list[RouteResult] = []
-    for i, (route, from_date, to_date) in enumerate(jobs):
+    empties: list[tuple[int, SearchJob]] = []  # vacías seguidas (posición en results, búsqueda)
+    for i, job in enumerate(jobs):
+        route, from_date, to_date = job
         if i and delay_seconds:
             time.sleep(delay_seconds)
         try:
-            results.append(searcher(route, from_date, to_date))
+            result = searcher(route, from_date, to_date)
+            results.append(result)
+            if guard is None:
+                continue
+            if result.fares:
+                guard.saw_prices(job)
+                empties.clear()
+                continue
+            empties.append((len(results) - 1, job))
+            if len(empties) >= guard.streak and guard.blocked():
+                guard.wait()
+                for pos, again in empties:
+                    results[pos] = searcher(*again)
+                if guard.blocked():
+                    raise RateLimited("Google sigue sin dar precios después de esperar (bloqueo silencioso)")
+                empties.clear()
         except RateLimited as exc:
             exc.partial = results  # lo ya buscado no se pierde
             raise

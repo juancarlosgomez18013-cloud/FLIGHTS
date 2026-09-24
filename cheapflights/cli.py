@@ -39,6 +39,7 @@ from .messages import (
 from .notify import Notifier, build_notifier, is_real
 from .search import (
     Backoff,
+    QuietBlockGuard,
     RateLimited,
     Route,
     RouteResult,
@@ -146,6 +147,9 @@ class _Runner:
     def __init__(self, config: Config, history: History, searcher: Searcher, delay: float, now: datetime, report: RunReport):
         self.config, self.history, self.searcher, self.delay, self.now, self.report = config, history, searcher, delay, now, report
         self.today = config.local_today(now)
+        self.guard = QuietBlockGuard(
+            searcher, wait_seconds=config.search.rate_limit_wait_seconds, max_waits=config.search.rate_limit_max_waits
+        )
 
     def search(self, jobs: list[SearchJob], partial: bool = False) -> list[RouteResult]:
         """Busca y guarda. Con `RateLimited`, guarda lo alcanzado y deja constancia en el reporte."""
@@ -153,7 +157,7 @@ class _Runner:
             return []
         try:
             results = search_routes(jobs, self.searcher, delay_seconds=self.delay,
-                                    on_error=lambda r, e: self.report.failures.append(f"{r}: {e}"))
+                                    on_error=lambda r, e: self.report.failures.append(f"{r}: {e}"), guard=self.guard)
         except RateLimited as exc:
             results = list(getattr(exc, "partial", []) or [])
             self.report.rate_limited = str(exc)
