@@ -245,6 +245,42 @@ def _last_searched(history: History, zone: Zone) -> datetime:
     return oldest
 
 
+def _last_run(history: History, key: str) -> datetime | None:
+    runs = history.runs(key)
+    return parse_ts(runs[-1]["seen_at"]) if runs else None
+
+
+def _pair_age_hours(history: History, zone: Zone, origin: str, destination: str, now: datetime) -> float:
+    """Horas desde la búsqueda más vieja de las partes de un origen-destino (nunca = infinito)."""
+    route = zone.route(origin, destination)
+    keys = [route.key] + ([route.outbound.key, route.inbound.key] if zone.one_way else [])
+    seen = [_last_run(history, k) for k in keys]
+    if any(s is None for s in seen):
+        return float("inf")
+    return (now - min(seen)).total_seconds() / 3600
+
+
+def due_zones(config: Config, zones: list[Zone], history: History, now: datetime, limit: int) -> list[Zone]:
+    """Modo goteo: las rutas que ya "tocan" (más atrasadas primero), hasta `limit`, agrupadas en zonas."""
+    due = []
+    for z in zones:
+        every = config.search.refresh_hours(z.kind)
+        for o in z.origins:
+            for d in z.destinations:
+                if o == d:
+                    continue
+                overdue = _pair_age_hours(history, z, o, d, now) / every
+                if overdue >= 1:
+                    due.append((-overdue, z.name, o, d, z))
+    due.sort(key=lambda t: t[:4])
+    chosen: dict[tuple[str, str], list[str]] = {}
+    zone_of: dict[str, Zone] = {}
+    for _, name, o, d, z in due[:limit]:
+        chosen.setdefault((name, o), []).append(d)
+        zone_of[name] = z
+    return [replace(zone_of[name], origins=(o,), destinations=tuple(ds)) for (name, o), ds in chosen.items()]
+
+
 def run_zones(
     config: Config,
     zones: list[Zone],
@@ -253,8 +289,13 @@ def run_zones(
     notifier: Notifier,
     delay: float | None = None,
     now: datetime | None = None,
+    feeders_max_age_hours: float | None = None,
 ) -> RunReport:
-    """Busca las zonas dadas, guarda historial y envía los 🔥 que toque avisar."""
+    """Busca las zonas dadas, guarda historial y envía los 🔥 que toque avisar.
+
+    `feeders_max_age_hours`: si se da, las conexiones desde casa solo se buscan si su última búsqueda
+    es más vieja que eso (modo goteo); si no, se buscan siempre que haya zonas internacionales.
+    """
     now = now or datetime.now(timezone.utc)
     today = config.local_today(now)
     delay = config.search.request_delay_seconds if delay is None else delay
@@ -264,8 +305,13 @@ def run_zones(
     searched_keys: set[str] = set()
 
     if any(z.kind == "international" for z in zones):
-        runner.feeders()
-        history.save()
+        feeder_seen = [_last_run(history, f.key) for f in config.feeder_searches()]
+        stale = feeders_max_age_hours is None or any(
+            s is None or (now - s).total_seconds() / 3600 >= feeders_max_age_hours for s in feeder_seen
+        )
+        if stale:
+            runner.feeders()
+            history.save()
     # Primero lo que lleva más tiempo sin buscarse: si Google corta una corrida, la siguiente sigue donde quedó.
     for zone in sorted(zones, key=lambda z: _last_searched(history, z)):
         if report.rate_limited:
@@ -327,17 +373,41 @@ def _finish(notifier: Notifier, sent: tuple[int, int]) -> None:
         sys.exit(3)
 
 
+def _should_alert_outage(config: Config, history: History, now: datetime) -> bool:
+    """Goteo: avisar ⚠️ solo si hace rato no llega ningún precio, y como máximo una vez por ese lapso."""
+    hours = config.search.alert_after_hours_without_prices
+    newest = max((s for s in (history.last_seen(k) for k in history.routes()) if s), default=None)
+    if newest is not None and (now - newest).total_seconds() / 3600 < hours:
+        return False
+    last_alert = history.data.get("outage_alert_at")
+    if last_alert and (now - parse_ts(last_alert)).total_seconds() / 3600 < hours:
+        return False
+    history.data["outage_alert_at"] = now.replace(microsecond=0).isoformat()
+    history.save()
+    return True
+
+
 @cli.command("buscar")
 @click.option("--tipo", "kind", type=click.Choice(sorted(KIND_ALIASES)), default="todo", show_default=True)
 @click.option("--zona", "zone", default=None, help="Nombre de una zona de config.yaml")
 @click.option("--dry-run", is_flag=True, help="No envía; imprime los mensajes")
 @click.option("--mock", is_flag=True, help="No consulta Google; usa precios inventados")
 @click.option("--delay", type=float, default=None, help="Segundos entre búsquedas")
+@click.option("--goteo", is_flag=True, help="Solo las rutas que ya tocan (máx. max_routes_per_run), para correr cada hora")
 @click.pass_obj
-def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: float | None) -> None:
+def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: float | None, goteo: bool) -> None:
     """Busca precios de ida y vuelta, guarda el historial y avisa lo 🔥 súper barato."""
     config: Config = obj["config"]
+    history: History = obj["history"]
     zones = _select_zones(config, kind, zone)
+    now = datetime.now(timezone.utc)
+    if goteo:
+        zones = due_zones(config, zones, history, now, config.search.max_routes_per_run)
+        if not zones:
+            click.echo("💤 Nada pendiente: todas las rutas se buscaron hace poco.")
+            return
+        n = sum(len(z.routes()) for z in zones)
+        click.echo(f"💧 Goteo: {n} ruta(s) que ya tocaban, las más atrasadas primero.")
     searcher = mock_searcher() if mock else google_searcher(
         config.currency, config.country, config.language,
         parallel_requests=config.search.parallel_requests,
@@ -345,7 +415,9 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
         backoff=Backoff(config.search.rate_limit_wait_seconds, config.search.rate_limit_max_waits),
     )
     notifier = _notifier(config, dry_run)
-    report = run_zones(config, zones, obj["history"], searcher, notifier, delay=0 if mock else delay)
+    feeders_age = 0.8 * config.search.refresh_hours_international if goteo else None
+    report = run_zones(config, zones, history, searcher, notifier, delay=0 if mock else delay,
+                       now=now, feeders_max_age_hours=feeders_age)
     click.echo(f"\n✔ {len(report.alerted)} aviso(s) 🔥 enviados · {report.requests} búsqueda(s) · {len(report.failures)} con error")
     for f in report.failures:
         click.secho(f"   ⚠ {f}", fg="yellow")
@@ -356,7 +428,10 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
     if report.rate_limited:
         if report.priced == 0:
             click.secho("Google bloqueó la búsqueda y no se consiguió ningún precio.", fg="red")
-            sys.exit(2)
+            if not goteo or _should_alert_outage(config, history, now):
+                sys.exit(2)
+            click.echo("   (en modo goteo solo se avisa si pasan varias horas sin precios)")
+            return
         click.secho(
             "⚠ Google frenó la búsqueda a mitad de camino: se guardó lo que alcanzó a buscar y la "
             "próxima corrida empieza por lo que quedó pendiente.",

@@ -21,6 +21,7 @@ jobs:
           H=$(mktemp -d)/history.json
           python -m cheapflights zonas
           python -m cheapflights --history "$H" buscar --mock --dry-run --tipo todo
+          python -m cheapflights --history "$H" buscar --goteo --mock --dry-run
           python -m cheapflights --history "$H" resumen --dry-run
           python -m cheapflights --history "$H" plan --dry-run
           python -m cheapflights --history "$H" probar --dry-run

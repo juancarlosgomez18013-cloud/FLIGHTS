@@ -30,6 +30,14 @@ class SearchSettings:
     requests_per_second: int = 2  # tope global de peticiones por segundo
     rate_limit_wait_seconds: float = 90.0  # si Google bloquea (429), cuánto esperar antes de reintentar
     rate_limit_max_waits: int = 3  # cuántas esperas por corrida antes de rendirse
+    # Modo goteo (buscar --goteo): una corrida pequeña cada hora con las rutas que ya "tocan"
+    refresh_hours_domestic: float = 6.0  # cada cuánto se vuelve a buscar una ruta de Colombia
+    refresh_hours_international: float = 24.0  # y una internacional
+    max_routes_per_run: int = 10  # tope de rutas por corrida (sin ráfagas)
+    alert_after_hours_without_prices: float = 12.0  # avisar ⚠️ solo si pasan tantas horas sin precios
+
+    def refresh_hours(self, kind: str) -> float:
+        return self.refresh_hours_domestic if kind == "domestic" else self.refresh_hours_international
 
 
 @dataclass(frozen=True)

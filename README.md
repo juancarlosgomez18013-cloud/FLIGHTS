@@ -8,7 +8,7 @@ cuando hay algo barato. Corre gratis en GitHub Actions: no necesita servidor ni 
 
 | Mensaje | Cuándo | Qué trae |
 |---|---|---|
-| 🔥 **Súper barato** | Apenas lo encuentra (Colombia cada 6 h, internacional cada mañana) | Ruta, precio ida y vuelta, fechas de ida y regreso, precio con y sin maleta, si cae en puente, cuánto ahorras y enlace para ver el viaje |
+| 🔥 **Súper barato** | Apenas lo encuentra (cada ruta de Colombia se revisa cada 6 h; internacional cada 24 h) | Ruta, precio ida y vuelta, fechas de ida y regreso, precio con y sin maleta, si cae en puente, cuánto ahorras y enlace para ver el viaje |
 | 🔥 **Súper barato · viaje armado** | Igual | Ida barata y regreso barato comprados por separado, aunque sean de aerolíneas distintas |
 | 🔥 **Súper barato · solo ida** | Igual | Un tramo solo ida muy barato |
 | ☀️ **Resumen del día** | 7:30 a. m. | Todo lo 🔥 súper barato y 👍 barato de hoy, nacional e internacional |
@@ -155,12 +155,19 @@ costar salir por esas fechas (la mediana de esos precios, a ±30 días de la ofe
 
 | Qué | Cuándo |
 |---|---|
-| Búsqueda nacional | 6:17 a. m., 12:17 p. m., 6:17 p. m., 12:17 a. m. |
-| Búsqueda internacional | 6:08 a. m. |
+| Búsqueda (goteo) | Cada hora, al minuto 23: solo las rutas que ya tocan, máximo 10 |
+| Cada ruta de Colombia | Se vuelve a buscar cada 6 horas |
+| Cada ruta internacional | Se vuelve a buscar cada 24 horas |
 | Resumen del día | 7:30 a. m. |
 | Plan de viajes | Lunes 8:07 a. m. |
 
-Cualquiera se puede lanzar a mano: **Actions** → elegir el workflow → **Run workflow**.
+El goteo reparte las búsquedas en el día en vez de hacer pocas corridas grandes: así no hay
+ráfagas, que es lo que hace que Google frene. Si Google bloquea, la siguiente hora sigue con lo
+pendiente; solo te llega un "⚠️" si pasan 12 horas sin conseguir ningún precio.
+
+Las búsquedas completas (todas las rutas de una vez) se pueden lanzar a mano: **Actions** →
+**Vuelos Colombia (completa, a mano)** o **Vuelos internacionales (completa, a mano)** →
+**Run workflow**.
 
 ## Uso local (opcional)
 
@@ -171,6 +178,7 @@ pip install -r requirements-dev.txt
 python -m cheapflights zonas                           # qué se busca, con cuántas noches y qué maleta
 python -m cheapflights buscar --tipo nacional --dry-run  # busca de verdad, no envía
 python -m cheapflights buscar --zona "Costa Caribe"
+python -m cheapflights buscar --goteo --dry-run        # solo las rutas que ya tocan
 python -m cheapflights resumen --dry-run               # ☀️ resumen del día
 python -m cheapflights plan --dry-run                  # 📅 plan de viajes
 python -m cheapflights probar                          # ✅ mensaje de prueba al canal

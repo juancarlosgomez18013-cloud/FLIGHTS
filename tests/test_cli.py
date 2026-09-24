@@ -246,3 +246,60 @@ def test_partial_block_is_not_a_failure_but_total_block_is(tmp_path, monkeypatch
     other.mkdir()
     r = _run(other, "buscar", "--mock", "--dry-run", "--zona", "Costa Caribe")
     assert r.exit_code == 2 and "no se consiguió ningún precio" in r.output
+
+
+def _seen(history, zone, origin, dest, when):
+    """Marca un origen-destino como buscado en `when` (ida y vuelta y, si aplica, los dos tramos)."""
+    r = zone.route(origin, dest)
+    for route in [r] + ([r.outbound, r.inbound] if zone.one_way else []):
+        history.record(RouteResult(route, {((TODAY + timedelta(days=5)).isoformat(),) * 2: 1.0}
+                                   if route.one_way else {(_iso5(), _iso7()): 1.0}), when)
+
+
+def _iso5():
+    return (TODAY + timedelta(days=5)).isoformat()
+
+
+def _iso7():
+    return (TODAY + timedelta(days=7)).isoformat()
+
+
+def test_goteo_picks_due_routes_most_overdue_first(config, history):
+    from cheapflights.cli import due_zones
+
+    costa, europa = config.zone("Costa Caribe"), config.zone("Europa")
+    for d in costa.destinations:
+        _seen(history, costa, "BGA", d, NOW - timedelta(hours=2))  # buscadas hace 2 h: no tocan
+    _seen(history, costa, "BGA", "CTG", NOW - timedelta(hours=7))  # 7 h > 6 h: toca
+    for o in europa.origins:
+        for d in europa.destinations:
+            _seen(history, europa, o, d, NOW - timedelta(hours=10))  # internacional: no toca (24 h)
+    _seen(history, europa, "BOG", "MAD", NOW - timedelta(hours=30))  # 30 h > 24 h: toca
+    zones = due_zones(config, [costa, europa], history, NOW, limit=10)
+    picked = [(z.name, r.origin, r.destination) for z in zones for r in z.routes()]
+    assert sorted(picked) == [("Costa Caribe", "BGA", "CTG"), ("Europa", "BOG", "MAD")]
+    # nunca buscadas van primero y el tope se respeta
+    zones = due_zones(config, [config.zone("Eje Cafetero"), costa], history, NOW, limit=2)
+    assert [r.destination for z in zones for r in z.routes()] == ["AXM", "MZL"]
+
+
+def test_goteo_cli_does_nothing_when_nothing_is_due(tmp_path, monkeypatch):
+    from cheapflights.cli import due_zones as real
+
+    monkeypatch.setattr("cheapflights.cli.due_zones", lambda *a, **k: [])
+    r = _run(tmp_path, "buscar", "--goteo", "--mock", "--dry-run")
+    assert r.exit_code == 0 and "Nada pendiente" in r.output
+    monkeypatch.setattr("cheapflights.cli.due_zones", real)
+    r = _run(tmp_path, "buscar", "--goteo", "--mock", "--dry-run")
+    assert r.exit_code == 0 and "💧 Goteo: 10 ruta(s)" in r.output
+
+
+def test_goteo_outage_alerts_only_after_hours_without_prices(config, history):
+    from cheapflights.cli import _should_alert_outage
+
+    _seen(history, config.zone("Bogotá"), "BGA", "BOG", NOW - timedelta(hours=3))
+    assert not _should_alert_outage(config, history, NOW)  # hubo precios hace 3 h: no molestar
+    later = NOW + timedelta(hours=13)
+    assert _should_alert_outage(config, history, later)  # 16 h sin precios: avisar…
+    assert not _should_alert_outage(config, history, later + timedelta(hours=1))  # …pero una sola vez
+    assert _should_alert_outage(config, history, later + timedelta(hours=13))  # y de nuevo 12 h después

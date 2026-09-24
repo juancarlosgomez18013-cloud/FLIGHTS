@@ -1,27 +1,13 @@
-name: Vuelos Colombia
+name: Vuelos Colombia (completa, a mano)
 
+# Búsqueda completa de todas las rutas de Colombia de una vez. Ya no corre sola: las búsquedas
+# automáticas las hace el goteo cada hora (goteo.yml). Útil para lanzarla a mano:
+# Actions → "Vuelos Colombia (completa, a mano)" → Run workflow.
 on:
-  schedule:
-    # Cada 6 horas. Hora Colombia (UTC−5): 6:17 a. m., 12:17 p. m., 6:17 p. m. y 12:17 a. m.
-    - cron: "17 11,17,23,5 * * *"
   workflow_dispatch:
-  # También corre una vez cuando cambia el código o la configuración, para verificar al instante.
-  # Es la única búsqueda que se dispara con un cambio (la internacional ya no), así no la cancela
-  # la cola. Los commits del bot solo tocan data/, así que no se dispara a sí mismo.
-  push:
-    paths:
-      - "cheapflights/**"
-      - "config.yaml"
-      - "requirements.txt"
-      - ".github/workflows/_run.yml"
-      - ".github/workflows/domestic.yml"
 
 jobs:
   domestic:
-    # Los push de otras ramas no buscan ni avisan (evita avisos duplicados y choques en el historial).
-    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
-    # El workflow interno guarda data/history.json en el repo: necesita escribir.
-    # Sin esto GitHub rechaza la corrida al arrancar (startup_failure).
     permissions:
       contents: write
     uses: ./.github/workflows/_run.yml

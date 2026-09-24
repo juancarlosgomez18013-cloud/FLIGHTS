@@ -110,6 +110,11 @@ search:
   rate_limit_wait_seconds: 120  # si Google bloquea (con error o en silencio), esperar esto y reintentar…
   rate_limit_max_waits: 3       # …hasta tantas veces por corrida; después se guarda lo logrado y la
                                 #    próxima corrida empieza por lo que quedó pendiente
+  # Modo goteo: una corrida pequeña cada hora con las rutas que ya "tocan"
+  refresh_hours_domestic: 6     # cada cuántas horas se vuelve a buscar una ruta de Colombia
+  refresh_hours_international: 24  # y una internacional
+  max_routes_per_run: 10        # máximo de rutas por corrida (sin ráfagas)
+  alert_after_hours_without_prices: 12  # te aviso ⚠️ solo si pasan tantas horas sin ningún precio
 
 # Conexiones desde casa hacia los aeropuertos internacionales. Se buscan
 # ida y vuelta con las fechas del viaje y se suman para dar el total.
