@@ -303,3 +303,21 @@ def test_goteo_outage_alerts_only_after_hours_without_prices(config, history):
     assert _should_alert_outage(config, history, later)  # 16 h sin precios: avisar…
     assert not _should_alert_outage(config, history, later + timedelta(hours=1))  # …pero una sola vez
     assert _should_alert_outage(config, history, later + timedelta(hours=13))  # y de nuevo 12 h después
+
+
+def test_goteo_empty_results_do_not_count_as_fresh(config, history):
+    """Una búsqueda que volvió vacía (bloqueo de Google) no deja la ruta "fresca"."""
+    from cheapflights.cli import due_zones
+
+    costa = config.zone("Costa Caribe")
+    for d in costa.destinations:
+        _seen(history, costa, "BGA", d, NOW - timedelta(hours=1))
+    r = costa.route("BGA", "CTG")
+    _seen(history, costa, "BGA", "CTG", NOW - timedelta(hours=8))  # tuvo precio hace 8 h…
+    history.record(RouteResult(r, {}), NOW - timedelta(hours=1))  # …y la última (hace 1 h) volvió vacía
+    history.record(RouteResult(costa.route("BGA", "BAQ"), {}), NOW - timedelta(hours=1))  # BAQ: precio hace 1 h, sigue fresca
+    eje = config.zone("Eje Cafetero")
+    for d in eje.destinations:  # nunca han dado precio: se reintentan cada 3 horas
+        history.record(RouteResult(eje.route("BGA", d), {}), NOW - timedelta(hours=4 if d == "PEI" else 1))
+    picked = sorted(r.destination for z in due_zones(config, [costa, eje], history, NOW, limit=10) for r in z.routes())
+    assert picked == ["CTG", "PEI"]

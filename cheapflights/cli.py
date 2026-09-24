@@ -250,26 +250,43 @@ def _last_run(history: History, key: str) -> datetime | None:
     return parse_ts(runs[-1]["seen_at"]) if runs else None
 
 
-def _pair_age_hours(history: History, zone: Zone, origin: str, destination: str, now: datetime) -> float:
-    """Horas desde la búsqueda más vieja de las partes de un origen-destino (nunca = infinito)."""
+def _key_overdue(history: History, key: str, now: datetime, every_hours: float, retry_empty_hours: float) -> float | None:
+    """Qué tan vencida está una búsqueda (≥ 1 = toca). Cuenta desde el último precio real:
+    una búsqueda que volvió vacía (p. ej. por un bloqueo de Google) no la deja "fresca".
+    Nunca con precio: se reintenta cada `retry_empty_hours`. None = nunca buscada."""
+    runs = history.runs(key)
+    if not runs:
+        return None
+    priced = [r for r in runs if r.get("min_price")]
+    if priced:
+        return (now - parse_ts(priced[-1]["seen_at"])).total_seconds() / 3600 / every_hours
+    return (now - parse_ts(runs[-1]["seen_at"])).total_seconds() / 3600 / retry_empty_hours
+
+
+def _pair_overdue(config: Config, history: History, zone: Zone, origin: str, destination: str, now: datetime) -> float:
+    """Qué tan vencido está un origen-destino: su ida y vuelta y, si alguna vez dieron precio, sus tramos solo ida."""
+    every, retry = config.search.refresh_hours(zone.kind), config.search.retry_empty_hours
     route = zone.route(origin, destination)
-    keys = [route.key] + ([route.outbound.key, route.inbound.key] if zone.one_way else [])
-    seen = [_last_run(history, k) for k in keys]
-    if any(s is None for s in seen):
+    main = _key_overdue(history, route.key, now, every, retry)
+    if main is None:
         return float("inf")
-    return (now - min(seen)).total_seconds() / 3600
+    worst = main
+    if zone.one_way:
+        for leg in (route.outbound, route.inbound):
+            if any(r.get("min_price") for r in history.runs(leg.key)):  # un tramo que nunca da precio no obliga a repetir
+                worst = max(worst, _key_overdue(history, leg.key, now, every, retry) or 0.0)
+    return worst
 
 
 def due_zones(config: Config, zones: list[Zone], history: History, now: datetime, limit: int) -> list[Zone]:
     """Modo goteo: las rutas que ya "tocan" (más atrasadas primero), hasta `limit`, agrupadas en zonas."""
     due = []
     for z in zones:
-        every = config.search.refresh_hours(z.kind)
         for o in z.origins:
             for d in z.destinations:
                 if o == d:
                     continue
-                overdue = _pair_age_hours(history, z, o, d, now) / every
+                overdue = _pair_overdue(config, history, z, o, d, now)
                 if overdue >= 1:
                     due.append((-overdue, z.name, o, d, z))
     due.sort(key=lambda t: t[:4])
