@@ -224,6 +224,9 @@ pendiente; solo cuenta como falla (y te avisa) si no se consiguió ningún preci
   se retrasa y pierdes el otro, la otra aerolínea no responde. Deja margen entre vuelos.
 - **El historial** se guarda en la rama `datos` como un solo commit que se reescribe en cada
   búsqueda, así el repositorio no crece con el tiempo.
+- **Repo público y activo:** GitHub apaga las tareas programadas de un repo público si pasan
+  60 días sin commits. El workflow *Mantener activo* revisa cada domingo y, si hace falta, hace un
+  commit pequeño para que las búsquedas sigan solas.
 - **Minutos de GitHub Actions:** con el repositorio público son ilimitados. Si es privado, el plan
   gratis trae unos 2.000 minutos al mes y este bot usa cerca de esa cifra; si se acaban, las
   búsquedas se detienen hasta el mes siguiente.

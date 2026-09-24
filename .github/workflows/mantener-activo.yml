@@ -1,0 +1,36 @@
+name: Mantener activo
+
+# En repos públicos, GitHub apaga los workflows programados si pasan 60 días sin commits.
+# El historial se guarda en la rama `datos` (no en la principal), así que una vez por semana
+# se revisa y, si el último commit tiene 45 días o más, se hace uno pequeño para que las
+# búsquedas sigan corriendo solas.
+on:
+  schedule:
+    - cron: "41 14 * * 0"   # domingos 9:41 a. m. hora Colombia
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mantener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Commit si hace falta
+        run: |
+          last=$(git log -1 --format=%ct)
+          days=$(( ($(date +%s) - last) / 86400 ))
+          echo "Último commit en la rama principal: hace $days días"
+          if [ "$days" -lt 45 ]; then
+            echo "No hace falta nada"
+            exit 0
+          fi
+          date -u +'%Y-%m-%d' > .github/ultima-actividad
+          git config user.name "cheapflights-bot"
+          git config user.email "cheapflights-bot@users.noreply.github.com"
+          git add .github/ultima-actividad
+          git commit -m "mantener activo: $(date -u +'%Y-%m-%d')"
+          git push

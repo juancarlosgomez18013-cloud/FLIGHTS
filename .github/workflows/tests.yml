@@ -2,7 +2,7 @@ name: Pruebas
 
 on:
   push:
-    paths-ignore: ["data/**"]
+    paths-ignore: ["data/**", ".github/ultima-actividad"]
   pull_request:
 
 jobs:
