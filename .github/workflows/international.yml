@@ -6,11 +6,9 @@ on:
     # y fuera de las horas de silencio, para que los 🔥 internacionales suenen.
     - cron: "8 11 * * *"
   workflow_dispatch:
-  # Una vez al cambiar la configuración o este archivo, para verificar sin esperar al día siguiente.
-  push:
-    paths:
-      - "config.yaml"
-      - ".github/workflows/international.yml"
+  # Sin disparo por push: GitHub deja solo una búsqueda en espera por cola, así que si un cambio
+  # lanzaba la nacional y la internacional a la vez, una de las dos se cancelaba. Con cada cambio
+  # corre la nacional (ver domestic.yml) y la internacional sigue su horario diario.
 
 jobs:
   international:

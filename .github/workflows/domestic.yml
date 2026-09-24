@@ -6,7 +6,8 @@ on:
     - cron: "17 11,17,23,5 * * *"
   workflow_dispatch:
   # También corre una vez cuando cambia el código o la configuración, para verificar al instante.
-  # Los commits del bot solo tocan data/, así que no se dispara a sí mismo.
+  # Es la única búsqueda que se dispara con un cambio (la internacional ya no), así no la cancela
+  # la cola. Los commits del bot solo tocan data/, así que no se dispara a sí mismo.
   push:
     paths:
       - "cheapflights/**"
