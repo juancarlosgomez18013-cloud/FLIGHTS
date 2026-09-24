@@ -5,6 +5,7 @@ import pytest
 from cheapflights.search import (
     MAX_COMBOS_PER_REQUEST,
     Backoff,
+    QuietBlockGuard,
     RateLimited,
     Route,
     RouteResult,
@@ -82,3 +83,49 @@ def test_backoff_waits_then_retries_and_finally_gives_up():
     with pytest.raises(RateLimited):
         Backoff(seconds=0, sleep=slept.append).run(flaky(1))  # sin espera configurada: no reintenta
     assert len(slept) == 3 and len(attempts) == 1
+
+
+def _jobs(*dests):
+    return [(Route("BGA", d, (2, 5)), date(2026, 10, 1), date(2026, 12, 31)) for d in dests]
+
+
+def test_quiet_block_waits_and_repeats_empty_searches():
+    """Google responde vacío en silencio: se detecta con el testigo, se espera y se repite."""
+    state = {"blocked": False, "calls": 0}
+    slept = []
+
+    def searcher(route, start, end):
+        state["calls"] += 1
+        if route.destination == "BAQ":
+            state["blocked"] = True  # desde aquí Google deja de dar precios
+        if state["blocked"] and not slept:
+            return RouteResult(route, {})
+        return RouteResult(route, {("2026-10-01", "2026-10-03"): 1.0})
+
+    guard = QuietBlockGuard(searcher, streak=3, wait_seconds=90, sleep=slept.append)
+    results = search_routes(_jobs("CTG", "BAQ", "SMR", "RCH", "VUP"), searcher, guard=guard)
+    assert slept == [90] and all(r.fares for r in results)  # tras esperar, todo tiene precios
+    assert guard.witness[0].destination == "CTG" and (guard.witness[2] - guard.witness[1]).days == 44
+
+
+def test_genuine_empty_routes_do_not_wait():
+    slept = []
+
+    def searcher(route, start, end):
+        empty = route.destination in ("EOH", "APO", "UIB", "PPN")  # rutas sin vuelos de verdad
+        return RouteResult(route, {} if empty else {("2026-10-01", "2026-10-03"): 1.0})
+
+    guard = QuietBlockGuard(searcher, streak=3, sleep=slept.append)
+    results = search_routes(_jobs("MDE", "EOH", "APO", "UIB", "PPN", "CTG"), searcher, guard=guard)
+    assert slept == [] and [bool(r.fares) for r in results] == [True, False, False, False, False, True]
+
+
+def test_quiet_block_that_does_not_lift_stops_the_run():
+    def searcher(route, start, end):
+        ok = route.destination == "CTG" and end.month == 12  # solo la primera búsqueda completa
+        return RouteResult(route, {("2026-10-01", "2026-10-03"): 1.0} if ok else {})
+
+    guard = QuietBlockGuard(searcher, streak=2, sleep=lambda s: None)
+    with pytest.raises(RateLimited) as exc:
+        search_routes(_jobs("CTG", "BAQ", "SMR", "RCH"), searcher, guard=guard)
+    assert "bloqueo silencioso" in str(exc.value) and exc.value.partial[0].route.destination == "CTG"
