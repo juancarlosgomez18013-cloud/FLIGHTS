@@ -1,19 +1,13 @@
-name: Vuelos internacionales
+name: Vuelos internacionales (completa, a mano)
 
+# Búsqueda completa de todas las rutas internacionales de una vez (unos 50 minutos). Ya no corre
+# sola: las búsquedas automáticas las hace el goteo cada hora (goteo.yml). Útil para lanzarla a
+# mano: Actions → "Vuelos internacionales (completa, a mano)" → Run workflow.
 on:
-  schedule:
-    # Una vez al día: 11:08 UTC = 6:08 a. m. hora Colombia. Antes del resumen de las 7:30
-    # y fuera de las horas de silencio, para que los 🔥 internacionales suenen.
-    - cron: "8 11 * * *"
   workflow_dispatch:
-  # Sin disparo por push: GitHub deja solo una búsqueda en espera por cola, así que si un cambio
-  # lanzaba la nacional y la internacional a la vez, una de las dos se cancelaba. Con cada cambio
-  # corre la nacional (ver domestic.yml) y la internacional sigue su horario diario.
 
 jobs:
   international:
-    # Los push de otras ramas no buscan ni avisan (evita avisos duplicados y choques en el historial).
-    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
     permissions:
       contents: write
     uses: ./.github/workflows/_run.yml
