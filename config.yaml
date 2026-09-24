@@ -58,19 +58,24 @@ one_way:
 #  🔥 SÚPER BARATO → te llega un mensaje apenas lo encuentro.
 #  👍 BARATO       → aparece en el resumen diario de las 7:30 a. m.
 #
-#  "Precio normal" de una ruta = lo que cuesta la mayoría de sus viajes
-#  (todas las combinaciones de fecha de ida y vuelta).
+#  "Precio normal" = lo que suele costar salir por esas fechas (se toma el
+#  viaje más barato de cada día de salida, a ±30 días de la oferta).
 #
-#  Etapa 1 (primeras semanas): cada ruta se compara con sus otros viajes.
+#  Etapa 1 (primeras semanas): cada ruta se compara con sus otras fechas.
 #  Etapa 2 (automática cuando la ruta ya tiene historial suficiente):
-#     se compara con lo que esa ruta ha costado en el tiempo.
+#     además se compara con lo que esa ruta ha costado en el tiempo.
+#
+#  Está en modo MUY ESTRICTO: solo llegan 🔥 las gangas de verdad (promos
+#  fuertes o errores de tarifa). Lo barato de siempre queda como 👍 en el
+#  resumen diario. Para recibir más 🔥, baja super_below_normal (ej. 35) y
+#  sube super_max_share (ej. 5).
 #
 #  Además puedes fijar tus propios precios por destino (ver ZONAS abajo).
 levels:
   cheap_below_normal: 20        # 👍 si está 20 % o más bajo el precio normal
-  super_below_normal: 25        # 🔥 si está 25 % o más bajo el precio normal…
-  super_below_cheap_dates: 15   #    …y 15 % bajo los viajes más baratos de siempre
-                                #    (así la tarifa promo de todos los días no cuenta como 🔥)
+  super_below_normal: 45        # 🔥 si está 45 % o más bajo el precio normal…
+  super_max_share: 3            #    …y ese precio aparece en máximo el 3 % de las fechas
+                                #    (la tarifa promo que se repite en muchos días no es 🔥)
   history_min_days: 14          # días de seguimiento antes de pasar a la etapa 2
   history_min_runs: 20          # y mínimo de búsquedas guardadas
   super_percentile: 10          # etapa 2: 🔥 si está en el 10 % más barato de lo visto…

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,10 +34,10 @@ class SearchSettings:
 
 @dataclass(frozen=True)
 class LevelSettings:
-    # Etapa 1: comparar con las demás fechas de la misma ruta
-    cheap_below_normal: float = 20.0  # 👍 si está 20 % bajo el precio normal (mediana de fechas)
-    super_below_normal: float = 25.0  # 🔥 si está 25 % bajo el precio normal…
-    super_below_cheap_dates: float = 15.0  # …y 15 % bajo el 25 % de fechas más baratas
+    # Etapa 1: comparar con lo que cuesta salir por esas fechas (mediana por día de salida, ±30 días)
+    cheap_below_normal: float = 20.0  # 👍 si está 20 % bajo el precio normal
+    super_below_normal: float = 45.0  # 🔥 si está 45 % bajo el precio normal…
+    super_max_share: float = 3.0  # …y ese precio aparece en máximo el 3 % de las fechas (oferta rara)
     # Etapa 2: comparar con lo que la ruta ha costado en el tiempo
     history_min_days: float = 14
     history_min_runs: int = 20
@@ -255,7 +255,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
     search = SearchSettings(**(raw.get("search") or {}))
-    levels = LevelSettings(**(raw.get("levels") or {}))
+    known_levels = {f.name for f in fields(LevelSettings)}
+    levels = LevelSettings(**{k: v for k, v in (raw.get("levels") or {}).items() if k in known_levels})
     raw_alerts = dict(raw.get("alerts") or {})
     if "quiet_hours" in raw_alerts:
         qh = raw_alerts["quiet_hours"]
