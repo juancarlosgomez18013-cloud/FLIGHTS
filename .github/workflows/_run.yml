@@ -1,4 +1,5 @@
-# Workflow reutilizable: instala, corre el comando y guarda data/history.json en git.
+# Workflow reutilizable: trae el historial de la rama `datos`, instala, corre el comando,
+# guarda el historial de vuelta en `datos` y, si algo falla, avisa por Telegram.
 name: _run
 
 on:
@@ -30,13 +31,26 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref_name }}
 
-      - uses: actions/setup-python@v5
+      # El historial vive en la rama `datos` (un solo commit que se reescribe cada vez),
+      # así el repositorio no crece con cada búsqueda.
+      - name: Traer historial
+        run: |
+          mkdir -p data
+          if git fetch --depth=1 origin datos 2>/dev/null; then
+            git show FETCH_HEAD:history.json > data/history.json
+            echo "Historial traído de la rama datos ($(wc -c < data/history.json) bytes)"
+          else
+            echo "Aún no hay rama datos: se empieza con lo que haya en data/"
+          fi
+          sha256sum data/history.json > "$RUNNER_TEMP/historial.antes" 2>/dev/null || true
+
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -59,21 +73,50 @@ jobs:
       - name: Guardar historial
         if: always()
         run: |
-          git config user.name "cheapflights-bot"
-          git config user.email "cheapflights-bot@users.noreply.github.com"
           if [ ! -f data/history.json ]; then
-            echo "No se generó historial en esta corrida"
+            echo "No hay historial que guardar"
             exit 0
           fi
-          git add data/history.json
-          if git diff --cached --quiet; then
+          if sha256sum --check --status "$RUNNER_TEMP/historial.antes" 2>/dev/null; then
             echo "Sin cambios en el historial"
             exit 0
           fi
-          git commit -m "data: precios $(date -u +'%Y-%m-%d %H:%M UTC') (${{ inputs.command }})"
+          git config user.name "cheapflights-bot"
+          git config user.email "cheapflights-bot@users.noreply.github.com"
+          blob=$(git hash-object -w data/history.json)
+          tree=$(printf '100644 blob %s\thistory.json\n' "$blob" | git mktree)
+          commit=$(git commit-tree "$tree" -m "datos: precios $(date -u +'%Y-%m-%d %H:%M UTC') (${{ inputs.command }})")
           for i in 1 2 3 4; do
-            git pull --rebase origin "${{ github.ref_name }}" && git push origin HEAD:"${{ github.ref_name }}" && exit 0
+            git push --force origin "$commit:refs/heads/datos" && exit 0
             sleep $((i * 5))
           done
-          echo "No se pudo subir el historial" >&2
+          echo "No se pudo guardar el historial" >&2
           exit 1
+
+      # Si algo falla (error, bloqueo total de Google o se pasa del tiempo), te llega un aviso.
+      - name: Avisar si falló
+        if: failure() || cancelled()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
+          COMANDO: ${{ inputs.command }}
+          ENLACE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$COMANDO" in
+            *nacional*) QUE="La búsqueda de vuelos en Colombia" ;;
+            *internacional*) QUE="La búsqueda de vuelos internacionales" ;;
+            resumen*) QUE="El resumen diario" ;;
+            plan*) QUE="El plan semanal" ;;
+            probar*) QUE="La prueba de avisos" ;;
+            *) QUE="Una tarea del bot de vuelos" ;;
+          esac
+          MSG="⚠️ ${QUE} falló. Se vuelve a intentar sola en su próximo horario. Detalles: ${ENLACE}"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -sS --max-time 20 -o /dev/null "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${MSG}" || true
+          fi
+          if [ -n "$NTFY_TOPIC" ]; then
+            curl -sS --max-time 20 -o /dev/null -d "$MSG" "${NTFY_SERVER:-https://ntfy.sh}/${NTFY_TOPIC}" || true
+          fi

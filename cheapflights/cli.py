@@ -24,7 +24,7 @@ import click
 
 from . import __version__
 from .config import KIND_LABEL, Config, Zone, load_config
-from .history import History
+from .history import History, parse_ts
 from .levels import SUPER, Verdict, best_per_destination, classify, classify_trip, enrich, trip_fares
 from .messages import (
     BAGS_TEXT,
@@ -104,6 +104,7 @@ class RunReport:
     sent_ok: int = 0
     sent_total: int = 0
     requests: int = 0  # búsquedas hechas (cada una son varias peticiones a Google)
+    priced: int = 0  # búsquedas que trajeron precios
 
     @property
     def sent(self) -> tuple[int, int]:
@@ -165,6 +166,7 @@ class _Runner:
         for r in results:
             self.history.record(r, self.now, partial=partial)
         self.report.requests += len(results)
+        self.report.priced += sum(1 for r in results if r.fares)
         return results
 
     def feeders(self) -> None:
@@ -233,6 +235,16 @@ class _Runner:
         return enriched
 
 
+def _last_searched(history: History, zone: Zone) -> datetime:
+    """La búsqueda más vieja de la zona (nunca buscada = la más vieja de todas)."""
+    oldest = datetime.max.replace(tzinfo=timezone.utc)
+    for r in zone.routes() + zone.one_way_routes():
+        runs = history.runs(r.key)
+        seen = parse_ts(runs[-1]["seen_at"]) if runs else datetime.min.replace(tzinfo=timezone.utc)
+        oldest = min(oldest, seen)
+    return oldest
+
+
 def run_zones(
     config: Config,
     zones: list[Zone],
@@ -254,7 +266,8 @@ def run_zones(
     if any(z.kind == "international" for z in zones):
         runner.feeders()
         history.save()
-    for zone in zones:
+    # Primero lo que lleva más tiempo sin buscarse: si Google corta una corrida, la siguiente sigue donde quedó.
+    for zone in sorted(zones, key=lambda z: _last_searched(history, z)):
         if report.rate_limited:
             break
         for v in runner.zone(zone):
@@ -341,8 +354,14 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
     _finish(notifier, report.sent)
     total_routes = sum(len(z.routes()) for z in zones)
     if report.rate_limited:
-        click.secho("Google bloqueó la búsqueda: se guardó lo que alcanzó a buscar.", fg="red")
-        sys.exit(2)
+        if report.priced == 0:
+            click.secho("Google bloqueó la búsqueda y no se consiguió ningún precio.", fg="red")
+            sys.exit(2)
+        click.secho(
+            "⚠ Google frenó la búsqueda a mitad de camino: se guardó lo que alcanzó a buscar y la "
+            "próxima corrida empieza por lo que quedó pendiente.",
+            fg="yellow",
+        )
     if report.failures and len(report.failures) >= max(1, total_routes // 2):
         click.secho("La mayoría de rutas fallaron: revisa la red o un bloqueo de Google.", fg="red")
         sys.exit(2)
