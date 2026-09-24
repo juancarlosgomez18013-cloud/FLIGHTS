@@ -10,13 +10,14 @@ from pathlib import Path
 import yaml
 
 from .places import CITY_NAMES
-from .search import Route
+from .search import ONE_WAY, Route
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 KINDS = ("domestic", "international")
 KIND_LABEL = {"domestic": "Colombia", "international": "Internacional"}
 DEFAULT_NIGHTS = {"domestic": (2, 5), "international": (6, 14)}
 DEFAULT_BAGS = {"domestic": 0, "international": 1}
+DEFAULT_ONE_WAY = {"domestic": True, "international": False}
 FEEDER_EXTRA_NIGHTS = 2  # la conexión puede salir el día anterior y volver el día siguiente
 
 
@@ -79,6 +80,7 @@ class Zone:
     months_ahead: int
     nights: tuple[int, int] = (2, 5)  # cuántas noches dura el viaje (mínimo, máximo)
     bags: int = 0  # 1 = el 🔥 se decide con el precio con maleta facturada; 0 = sin maleta
+    one_way: bool = False  # buscar también solo ida, en los dos sentidos (avisos 🔥 de solo ida)
     super_price: float | None = None  # precio fijo opcional (toda la zona)
     cheap_price: float | None = None
     prices: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)  # por destino
@@ -101,6 +103,17 @@ class Zone:
     def routes(self) -> list[Route]:
         """Las búsquedas que deciden el 🔥: una por origen y destino, con la maleta de la zona."""
         return [self.route(o, d) for o in self.origins for d in self.destinations if o != d]
+
+    def one_way_routes(self) -> list[Route]:
+        """Solo ida en los dos sentidos (origen → destino y destino → origen), con la maleta de la zona."""
+        if not self.one_way:
+            return []
+        out: list[Route] = []
+        for o in self.origins:
+            for d in self.destinations:
+                if o != d:
+                    out += [Route(o, d, ONE_WAY, self.bags), Route(d, o, ONE_WAY, self.bags)]
+        return out
 
     def searches(self, both_bag_prices: bool) -> list[Route]:
         """Todo lo que se consulta a Google: la búsqueda que decide y, si se pide, la otra maleta."""
@@ -260,6 +273,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     months_by_kind = raw.get("months_ahead") or {}
     nights_by_kind = {k: _nights(v, f"nights.{k}") for k, v in (raw.get("nights") or {}).items()}
     bags_by_kind = {k: _bags(v, f"bags.{k}") for k, v in (raw.get("bags") or {}).items()}
+    one_way_by_kind = {k: _bags(v, f"one_way.{k}") == 1 for k, v in (raw.get("one_way") or {}).items()}
     home = _iata(raw.get("home", "BGA"))
     default_origins = {"domestic": [home], "international": ["BOG", "MDE"]}
     default_months = {"domestic": 6, "international": 9}
@@ -304,6 +318,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         origins = z.get("origins") or origins_by_kind.get(kind) or default_origins[kind]
         nights = _nights(z["nights"], f"Zona '{zname}'") if z.get("nights") is not None else nights_by_kind.get(kind, DEFAULT_NIGHTS[kind])
         bags = _bags(z["bags"], f"Zona '{zname}'") if z.get("bags") is not None else bags_by_kind.get(kind, DEFAULT_BAGS[kind])
+        one_way = (
+            _bags(z["one_way"], f"Zona '{zname}' one_way") == 1
+            if z.get("one_way") is not None
+            else one_way_by_kind.get(kind, DEFAULT_ONE_WAY[kind])
+        )
         zones.append(
             Zone(
                 name=zname,
@@ -314,6 +333,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
                 months_ahead=int(z.get("months_ahead") or months_by_kind.get(kind) or default_months[kind]),
                 nights=nights,
                 bags=bags,
+                one_way=one_way,
                 super_price=super_price,
                 cheap_price=cheap_price,
                 prices=prices,

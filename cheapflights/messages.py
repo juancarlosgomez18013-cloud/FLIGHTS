@@ -14,7 +14,7 @@ from datetime import date
 
 from .config import KINDS, Config
 from .festivos import festivos_en
-from .levels import CHEAP, SUPER, Verdict
+from .levels import CHEAP, LEVEL_RANK, SUPER, Verdict
 from .notify import to_plain
 from .places import flag
 from .search import Fares
@@ -26,9 +26,10 @@ MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto
 MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 MAX_VISIBLE_CHARS = 3500  # Telegram permite 4096 caracteres visibles; dejamos margen
-FOOTER = "ℹ️ Ida y vuelta · 1 adulto · precio por persona. Confirma el precio antes de comprar."
+FOOTER = "ℹ️ Precio por persona, 1 adulto. Confirma el precio antes de comprar."
 KIND_HEADER = {"domestic": "🇨🇴 *COLOMBIA*", "international": "✈️ *INTERNACIONAL*"}
 LEVEL_TITLE = {SUPER: "🔥 *Súper barato*", CHEAP: "👍 *Barato*"}
+ONE_WAY_TITLE = "🎫 *Solo ida*"
 BAGS_TEXT = {0: "sin maleta", 1: "con maleta facturada"}
 BAGS_ICON = {0: "🎒", 1: "🧳"}
 COMPACT_FROM = 3  # con 3 o más 🔥 a la vez, se manda una lista corta en vez de fichas
@@ -69,7 +70,9 @@ def fmt_nights(n: int) -> str:
 
 
 def fmt_trip_short(out: str, back: str, today: date | None = None) -> str:
-    """'sáb 24 → mié 28 oct' (o 'sáb 28 nov → mié 2 dic'; con año si no es el actual)."""
+    """'sáb 24 → mié 28 oct' (o 'sáb 28 nov → mié 2 dic'; con año si no es el actual). Solo ida: 'sáb 24 oct'."""
+    if out == back:
+        return fmt_date_short(out, today)
     o, b = date.fromisoformat(out), date.fromisoformat(back)
     left = f"{DIAS_CORTOS[o.weekday()]} {o.day}"
     if (o.year, o.month) != (b.year, b.month):
@@ -91,7 +94,8 @@ def fmt_percent(value: float) -> str:
 
 
 def flights_link(config: Config, origin: str, destination: str, out: str, back: str) -> str:
-    q = f"Flights from {origin} to {destination} on {out} through {back}"
+    """Búsqueda en Google Flights: ida y vuelta, o solo ida si la vuelta es el mismo día de la ida."""
+    q = f"Flights from {origin} to {destination} on {out} one way" if out == back else f"Flights from {origin} to {destination} on {out} through {back}"
     return "https://www.google.com/travel/flights?" + urllib.parse.urlencode(
         {"q": q, "curr": config.currency, "hl": config.language, "gl": config.country}
     )
@@ -207,6 +211,18 @@ def _other_bag_text(v: Verdict) -> str | None:
     return f"{BAGS_ICON[other]} {BAGS_TEXT[other][0].upper()}{BAGS_TEXT[other][1:]}: {fmt_price(v.other_bag_price, v.currency)}"
 
 
+def _split_text(v: Verdict) -> str | None:
+    if v.split_price is None:
+        return None
+    return f"✂️ Armado con dos tramos solo ida: {fmt_price(v.split_price, v.currency)} (ahorras {fmt_price(v.price - v.split_price, v.currency)})"
+
+
+def _trip_title(config: Config, v: Verdict) -> str:
+    if v.one_way:
+        return f"{config.city(v.origin)} → {config.city(v.destination)}"
+    return f"{config.city(v.origin)} ⇄ {config.city(v.destination)}"
+
+
 def _feeder_lines(config: Config, v: Verdict, today: date) -> list[str]:
     if v.zone.kind != "international" or v.origin == config.home:
         return []
@@ -228,15 +244,23 @@ def _feeder_lines(config: Config, v: Verdict, today: date) -> list[str]:
 # -- aviso inmediato 🔥 ---------------------------------------------------------
 
 def format_super_alert(config: Config, v: Verdict, today: date) -> str:
-    lines = [
-        f"🔥 *SÚPER BARATO* · {v.zone.label}",
-        f"*{config.city(v.origin)} ⇄ {config.city(v.destination)}*",
-        f"💰 *{fmt_price(v.price, v.currency)}* ida y vuelta · {BAGS_TEXT[v.bags]}",
-    ]
-    other = _other_bag_text(v)
-    if other:
-        lines.append(other)
-    lines.append(f"🗓️ {fmt_trip_long(v.out, v.back, today)}")
+    if v.one_way:
+        lines = [
+            f"🔥 *SÚPER BARATO · SOLO IDA* · {v.zone.label}",
+            f"*{_trip_title(config, v)}*",
+            f"💰 *{fmt_price(v.price, v.currency)}* solo ida · {BAGS_TEXT[v.bags]}",
+            f"🗓️ {fmt_date_long(v.out, today)}",
+        ]
+    else:
+        lines = [
+            f"🔥 *SÚPER BARATO* · {v.zone.label}",
+            f"*{_trip_title(config, v)}*",
+            f"💰 *{fmt_price(v.price, v.currency)}* ida y vuelta · {BAGS_TEXT[v.bags]}",
+        ]
+        for extra in (_other_bag_text(v), _split_text(v)):
+            if extra:
+                lines.append(extra)
+        lines.append(f"🗓️ {fmt_trip_long(v.out, v.back, today)}")
     holiday = holiday_text(v.out, v.back, today)
     if holiday:
         lines.append(holiday)
@@ -253,15 +277,19 @@ def format_super_alert(config: Config, v: Verdict, today: date) -> str:
 
 def _item(config: Config, v: Verdict, today: date) -> str:
     """Una línea (y detalles cortos) por destino, para listas y el resumen."""
-    city = config.city(v.destination)
+    label = _trip_title(config, v) if v.one_way else config.city(v.destination)
+    when = fmt_trip_short(v.out, v.back, today) + ("" if v.one_way else f" ({fmt_nights(v.nights)})")
+    icon = destination_icon(v) if v.destination != config.home else flag(v.origin) or v.zone.emoji
     lines = [
-        f"• {destination_icon(v)} *{link(city, flights_link(config, v.origin, v.destination, v.out, v.back))}*: "
-        f"{fmt_price(v.price, v.currency)} · {fmt_trip_short(v.out, v.back, today)} ({fmt_nights(v.nights)})"
+        f"• {icon} *{link(label, flights_link(config, v.origin, v.destination, v.out, v.back))}*: "
+        f"{fmt_price(v.price, v.currency)} · {when}"
     ]
-    details = [BAGS_TEXT[v.bags]]
+    details = [("solo ida · " if v.one_way else "") + BAGS_TEXT[v.bags]]
     other = _other_bag_text(v)
     if other:
         details[0] += f" · {other[2:3].lower()}{other[3:]}"
+    if v.split_price is not None:
+        details.append(f"armado con dos tramos solo ida: {fmt_price(v.split_price, v.currency)}")
     if v.zone.kind == "international":
         via = f"sale de {config.city(v.origin)}"
         if v.feeder_price is not None:
@@ -285,7 +313,8 @@ def format_alerts_packed(config: Config, verdicts: list[Verdict], today: date) -
     ordered = sorted(verdicts, key=lambda v: (-v.savings_percent, v.total))
     if len(ordered) < COMPACT_FROM:
         return pack([Piece(format_super_alert(config, v, today) + "\n", verdicts=(v,)) for v in ordered])
-    title = f"🔥 *{len(ordered)} viajes súper baratos*"
+    n_one_way = sum(1 for v in ordered if v.one_way)
+    title = f"🔥 *{len(ordered)} vuelos súper baratos*" if n_one_way else f"🔥 *{len(ordered)} viajes súper baratos*"
     pieces = [Piece(title + "\n")]
     for kind in KINDS:
         items = [v for v in ordered if v.zone.kind == kind]
@@ -337,8 +366,9 @@ def format_summary(
             pieces.append(Piece(f"⚠️ Hace {stale:.0f} días que no llegan precios nuevos: puede que la búsqueda esté fallando."))
         if not verdicts and stale is None:
             pieces.append(Piece("Aún no hay datos. Llegarán con la próxima búsqueda."))
+        round_trips = [v for v in verdicts if not v.one_way]
         for level in (SUPER, CHEAP):
-            items = sorted((v for v in verdicts if v.level == level), key=_sort_key)
+            items = sorted((v for v in round_trips if v.level == level), key=_sort_key)
             if not items:
                 continue
             anything = True
@@ -348,6 +378,15 @@ def format_summary(
                 pieces.append(Piece(_item(config, v, today), context=f"{header} (sigue)\n{title}"))
             if len(items) > limit:
                 pieces.append(Piece(f"   …y {len(items) - limit} destinos más (salen en el plan del lunes)"))
+        one_way = sorted((v for v in verdicts if v.one_way and v.level), key=lambda v: (LEVEL_RANK[v.level], -v.savings_percent, v.price))
+        if one_way:
+            anything = True
+            pieces.append(Piece(ONE_WAY_TITLE, context=f"{header} (sigue)"))
+            for v in one_way[:limit]:
+                mark = "🔥" if v.level == SUPER else "👍"
+                pieces.append(Piece(_item(config, v, today).replace("• ", f"• {mark} ", 1), context=f"{header} (sigue)\n{ONE_WAY_TITLE}"))
+            if len(one_way) > limit:
+                pieces.append(Piece(f"   …y {len(one_way) - limit} tramos más"))
         if verdicts and not any(v.level for v in verdicts):
             pieces.append(Piece("Nada barato por ahora. Te aviso apenas aparezca algo."))
         pieces.append(Piece(""))
@@ -417,7 +456,7 @@ def format_test(config: Config, sample: Verdict | None, today: date) -> list[str
     intro = (
         "✅ *Prueba: el bot de vuelos funciona*\n"
         "Si ves este mensaje, los avisos te van a llegar aquí.\n\n"
-        "Busco viajes de *ida y vuelta*, con y sin maleta facturada.\n"
+        "Busco viajes de *ida y vuelta*, con y sin maleta facturada. En Colombia también tramos *solo ida*.\n"
         "🔥 *Súper barato* → te escribo apenas lo encuentro (reviso Colombia cada 6 horas e internacional cada mañana).\n"
         "☀️ *Resumen* → todos los días a las 7:30 a. m., con lo 🔥 y lo 👍 barato.\n"
         "📅 *Plan de viajes* → los lunes."

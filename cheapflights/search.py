@@ -49,14 +49,21 @@ def window_around(day: str, nights: tuple[int, int], start: date, end: date) -> 
     return lo, hi
 
 
+ONE_WAY = (0, 0)  # "noches" de un vuelo solo ida: la vuelta es el mismo día de la ida
+
+
 @dataclass(frozen=True, order=True)
 class Route:
-    """Una búsqueda: ida y vuelta, 1 adulto, con o sin maleta facturada."""
+    """Una búsqueda: ida y vuelta (o solo ida si nights == (0, 0)), 1 adulto, con o sin maleta facturada."""
 
     origin: str
     destination: str
-    nights: tuple[int, int]  # (mínimo, máximo) de noches
+    nights: tuple[int, int]  # (mínimo, máximo) de noches; (0, 0) = solo ida
     bags: int = 0  # maletas facturadas incluidas en el precio (0 o 1)
+
+    @property
+    def one_way(self) -> bool:
+        return tuple(self.nights) == ONE_WAY
 
     @property
     def pair(self) -> str:
@@ -64,7 +71,9 @@ class Route:
 
     @property
     def key(self) -> str:
-        """Identificador en el historial, ej. 'BGA-CTG/2-5n/0m'."""
+        """Identificador en el historial, ej. 'BGA-CTG/2-5n/0m' o 'BGA-CTG/ida/0m'."""
+        if self.one_way:
+            return f"{self.pair}/ida/{self.bags}m"
         return f"{self.pair}/{self.nights[0]}-{self.nights[1]}n/{self.bags}m"
 
     @property
@@ -78,7 +87,7 @@ class Route:
 
 @dataclass(frozen=True)
 class RouteResult:
-    """Precio mínimo por combinación (ida, vuelta) para una ruta."""
+    """Precio mínimo por combinación (ida, vuelta) para una ruta. En solo ida, vuelta == ida."""
 
     route: Route
     fares: Fares = field(default_factory=dict)
@@ -175,7 +184,8 @@ def google_searcher(
 
         def format(self) -> list:
             data = super().format()
-            data[-1] = [self.min_nights, self.max_nights]
+            if self.trip_type == TripType.ROUND_TRIP:  # en solo ida el último elemento es el rango de fechas
+                data[-1] = [self.min_nights, self.max_nights]
             return data
 
     class RangeSearchDates(SearchDates):
@@ -231,20 +241,23 @@ def google_searcher(
         origin, destination = Airport[route.origin], Airport[route.destination]
         segments = [
             FlightSegment(departure_airport=[[origin, 0]], arrival_airport=[[destination, 0]], travel_date=from_date.isoformat()),
-            FlightSegment(
-                departure_airport=[[destination, 0]],
-                arrival_airport=[[origin, 0]],
-                travel_date=(from_date + timedelta(days=lo)).isoformat(),
-            ),
         ]
+        if not route.one_way:
+            segments.append(
+                FlightSegment(
+                    departure_airport=[[destination, 0]],
+                    arrival_airport=[[origin, 0]],
+                    travel_date=(from_date + timedelta(days=lo)).isoformat(),
+                )
+            )
         filters = RangeFilters(
-            trip_type=TripType.ROUND_TRIP,
+            trip_type=TripType.ONE_WAY if route.one_way else TripType.ROUND_TRIP,
             passenger_info=PassengerInfo(adults=1),
             flight_segments=segments,
             bags=BagsFilter(checked_bags=route.bags) if route.bags else None,
             from_date=from_date.isoformat(),
             to_date=to_date.isoformat(),
-            duration=lo,
+            duration=None if route.one_way else lo,
             min_nights=lo,
             max_nights=hi,
         )
@@ -252,9 +265,10 @@ def google_searcher(
         fares: Fares = {}
         seen_currency = currency
         for p in prices:
-            if len(p.date) != 2 or not p.price or p.price <= 0:
+            if not p.price or p.price <= 0 or len(p.date) != (1 if route.one_way else 2):
                 continue
-            out, back = p.date[0].date().isoformat(), p.date[1].date().isoformat()
+            out = p.date[0].date().isoformat()
+            back = out if route.one_way else p.date[1].date().isoformat()
             if not lo <= nights_between(out, back) <= hi:
                 continue
             fares[(out, back)] = min(fares.get((out, back), p.price), float(p.price))

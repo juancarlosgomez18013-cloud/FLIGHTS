@@ -22,7 +22,7 @@ from typing import Any
 
 from .config import Config, LevelSettings, Zone
 from .history import History, midrank_percentile, parse_ts
-from .search import Fares, Route, nights_between
+from .search import ONE_WAY, Fares, Route, nights_between
 
 SUPER = "super"
 CHEAP = "barato"
@@ -50,6 +50,7 @@ class Verdict:
     same_price_trips: tuple[tuple[str, str], ...] = ()  # otros viajes al mismo precio (±1 %)
     cheap_trips: tuple[tuple[str, str, float], ...] = ()  # otros viajes baratos (precio distinto), por fecha
     other_bag_price: float | None = None  # el mismo viaje con la otra opción de maleta
+    split_price: float | None = None  # el mismo viaje armado con dos tramos solo ida, si sale más barato
     feeder_price: float | None = None  # conexión casa ⇄ hub, ida y vuelta
     feeder_out: str | None = None
     feeder_back: str | None = None
@@ -71,6 +72,15 @@ class Verdict:
     @property
     def key(self) -> str:
         return self.route.key
+
+    @property
+    def one_way(self) -> bool:
+        return self.route.one_way
+
+    @property
+    def alert_key(self) -> str:
+        """Qué se avisa una sola vez: el destino (ida y vuelta, desde cualquier hub) o el tramo solo ida."""
+        return f"solo-ida:{self.pair}" if self.one_way else self.destination
 
     @property
     def pair(self) -> str:
@@ -140,7 +150,8 @@ def classify(
     values = list(upcoming.values())
     normal = statistics.median(values)
     low_quarter = _quantile(values, 0.25)
-    fixed_super, fixed_cheap = zone.fixed_prices(route.destination)
+    # Los precios fijos de config.yaml son de ida y vuelta: no aplican a un tramo solo ida.
+    fixed_super, fixed_cheap = (None, None) if route.one_way else zone.fixed_prices(route.destination)
 
     cheap_limit = normal * (1 - levels.cheap_below_normal / 100)
     if fixed_cheap is not None:
@@ -205,7 +216,27 @@ def other_bag_price(history: History, route: Route, out: str, back: str) -> floa
 
 
 def with_other_bag(v: Verdict, history: History) -> Verdict:
+    if v.one_way:
+        return v
     return replace(v, other_bag_price=other_bag_price(history, v.route, v.out, v.back))
+
+
+def split_cost(history: History, route: Route, out: str, back: str) -> float | None:
+    """Mismo viaje con dos tramos solo ida (ida y regreso por separado), si ambos tienen precio."""
+    ida = history.fares(Route(route.origin, route.destination, ONE_WAY, route.bags).key).get((out, out))
+    vuelta = history.fares(Route(route.destination, route.origin, ONE_WAY, route.bags).key).get((back, back))
+    if ida is None or vuelta is None:
+        return None
+    return ida + vuelta
+
+
+def with_split(v: Verdict, history: History) -> Verdict:
+    if v.one_way or not v.zone.one_way:
+        return v
+    split = split_cost(history, v.route, v.out, v.back)
+    if split is None or split >= v.price:
+        return v
+    return replace(v, split_price=split)
 
 
 def feeder_cost(
@@ -247,18 +278,21 @@ def with_feeder(v: Verdict, history: History, config: Config, today: date) -> Ve
 
 
 def enrich(v: Verdict, history: History, config: Config, today: date) -> Verdict:
-    """Completa un veredicto con el precio de la otra maleta y la conexión desde casa."""
-    return with_feeder(with_other_bag(v, history), history, config, today)
+    """Completa un veredicto con el precio de la otra maleta, los dos tramos sueltos y la conexión desde casa."""
+    if v.one_way:
+        return v
+    return with_feeder(with_split(with_other_bag(v, history), history), history, config, today)
 
 
 def best_per_destination(verdicts: list[Verdict]) -> list[Verdict]:
-    """Si un destino sale desde Bogotá y desde Medellín, se queda el más barato en total desde casa."""
+    """Si un destino sale desde Bogotá y desde Medellín, se queda el más barato en total desde casa.
+    Los tramos solo ida van aparte (uno por sentido)."""
     best: dict[str, Verdict] = {}
     for v in verdicts:
-        cur = best.get(v.destination)
+        cur = best.get(v.alert_key)
         key = (v.total, LEVEL_RANK[v.level], v.out)
         if cur is None or key < (cur.total, LEVEL_RANK[cur.level], cur.out):
-            best[v.destination] = v
+            best[v.alert_key] = v
     return list(best.values())
 
 

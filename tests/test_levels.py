@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 from cheapflights.config import LevelSettings
-from cheapflights.levels import CHEAP, SUPER, best_per_destination, classify, classify_from_history, enrich, feeder_cost
+from cheapflights.levels import CHEAP, SUPER, best_per_destination, classify, classify_from_history, enrich, feeder_cost, split_cost
 from cheapflights.search import Route, RouteResult
 
 from .conftest import NOW, TODAY, ZONE, fares, route, runs
@@ -140,3 +140,36 @@ def test_classify_from_history_ignores_partial_searches(history):
     assert classify_from_history(PLAIN, other, history, LEVELS, TODAY) is None
     history.record(RouteResult(R, fares([100_000] * 5)), NOW)
     assert classify_from_history(PLAIN, R, history, LEVELS, TODAY).price == 100_000
+
+
+def _one_way(prices, **kw):
+    return {(d, d): p for (d, _), p in fares(prices, **kw).items()}
+
+
+def test_one_way_ignores_round_trip_fixed_prices():
+    z = replace(PLAIN, prices={"BOG": (200_000, 250_000)})  # precios fijos pensados para ida y vuelta
+    v = classify(route("BGA", "BOG", (0, 0)), _one_way([150_000] * 40), "COP", z, LEVELS, [], TODAY)
+    assert v.one_way and v.level is None  # un tramo plano a 150.000 no es 🔥 aunque sea < 200.000
+    assert classify(R, fares([150_000] * 40), "COP", z, LEVELS, [], TODAY).level == SUPER
+
+
+def test_split_price_when_two_one_ways_are_cheaper(history, config):
+    zone = config.zone("Costa Caribe")
+    r = zone.route("BGA", "CTG")
+    out, back = _iso(10), _iso(13)
+    history.record(RouteResult(route("BGA", "CTG", (0, 0)), {(out, out): 60_000.0}), NOW)
+    history.record(RouteResult(route("CTG", "BGA", (0, 0)), {(back, back): 70_000.0}), NOW)
+    assert split_cost(history, r, out, back) == 130_000
+    assert split_cost(history, r, out, _iso(14)) is None  # no hay tramo de regreso ese día
+    v = classify(r, {(out, back): 180_000.0} | fares([300_000] * 30), "COP", zone, LEVELS, [], TODAY)
+    assert enrich(v, history, config, TODAY).split_price == 130_000
+    v = classify(r, {(out, back): 120_000.0} | fares([300_000] * 30), "COP", zone, LEVELS, [], TODAY)
+    assert enrich(v, history, config, TODAY).split_price is None  # el ida y vuelta ya es más barato
+
+
+def test_one_way_verdicts_are_kept_apart_from_round_trips():
+    ow = classify(route("BGA", "BOG", (0, 0)), _one_way([50_000] + [120_000] * 30), "COP", PLAIN, LEVELS, [], TODAY)
+    back = classify(route("BOG", "BGA", (0, 0)), _one_way([55_000] + [120_000] * 30), "COP", PLAIN, LEVELS, [], TODAY)
+    rt = classify(R, fares([100_000] + [240_000] * 30), "COP", PLAIN, LEVELS, [], TODAY)
+    kept = best_per_destination([ow, back, rt])
+    assert sorted(v.alert_key for v in kept) == ["BOG", "solo-ida:BGA-BOG", "solo-ida:BOG-BGA"]

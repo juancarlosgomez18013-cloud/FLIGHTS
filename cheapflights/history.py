@@ -8,7 +8,8 @@ Estructura:
     runs:     lista acotada de {seen_at, min_price, min_out, min_back, median_price}
     fares:    precio más reciente por viaje: {"ida": [precio por cada nº de noches, o null]}
     partial:  true si solo se buscó una ventana pequeña (la otra opción de maleta, alrededor de la oferta)
-  alerts["CTG"]: aviso 🔥 vigente para ese destino {price, out, back, route, at}; se borra si la oferta desaparece
+  alerts["CTG"]: aviso 🔥 vigente para ese destino (ida y vuelta) {price, out, back, route, at};
+  alerts["solo-ida:BGA-CTG"]: igual para un tramo solo ida. Se borra si la oferta desaparece.
 
 Los historiales de versiones anteriores (solo ida) no son comparables y se descartan.
 """
