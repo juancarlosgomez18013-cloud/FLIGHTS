@@ -17,7 +17,7 @@ KINDS = ("domestic", "international")
 KIND_LABEL = {"domestic": "Colombia", "international": "Internacional"}
 DEFAULT_NIGHTS = {"domestic": (2, 5), "international": (6, 14)}
 DEFAULT_BAGS = {"domestic": 0, "international": 1}
-DEFAULT_ONE_WAY = {"domestic": True, "international": False}
+DEFAULT_ONE_WAY = {"domestic": True, "international": True}
 FEEDER_EXTRA_NIGHTS = 2  # la conexión puede salir el día anterior y volver el día siguiente
 
 

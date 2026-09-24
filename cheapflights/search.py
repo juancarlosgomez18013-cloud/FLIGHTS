@@ -60,6 +60,7 @@ class Route:
     destination: str
     nights: tuple[int, int]  # (mínimo, máximo) de noches; (0, 0) = solo ida
     bags: int = 0  # maletas facturadas incluidas en el precio (0 o 1)
+    combo: bool = False  # el mejor viaje: ida y vuelta normal o armado con dos tramos solo ida (no se busca, se calcula)
 
     @property
     def one_way(self) -> bool:
@@ -74,12 +75,27 @@ class Route:
         """Identificador en el historial, ej. 'BGA-CTG/2-5n/0m' o 'BGA-CTG/ida/0m'."""
         if self.one_way:
             return f"{self.pair}/ida/{self.bags}m"
-        return f"{self.pair}/{self.nights[0]}-{self.nights[1]}n/{self.bags}m"
+        return f"{self.pair}/{self.nights[0]}-{self.nights[1]}n/{self.bags}m" + ("/armado" if self.combo else "")
+
+    @property
+    def base(self) -> "Route":
+        """La búsqueda de ida y vuelta normal que hay detrás (sin el armado)."""
+        return Route(self.origin, self.destination, self.nights, self.bags)
 
     @property
     def other_bags(self) -> "Route":
         """La misma búsqueda con la otra opción de maleta."""
         return Route(self.origin, self.destination, self.nights, 1 - self.bags)
+
+    @property
+    def outbound(self) -> "Route":
+        """El tramo solo ida de ida (origen → destino)."""
+        return Route(self.origin, self.destination, ONE_WAY, self.bags)
+
+    @property
+    def inbound(self) -> "Route":
+        """El tramo solo ida de regreso (destino → origen)."""
+        return Route(self.destination, self.origin, ONE_WAY, self.bags)
 
     def __str__(self) -> str:
         return self.key

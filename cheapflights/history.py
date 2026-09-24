@@ -131,7 +131,7 @@ class History:
         entry = self.data["routes"].get(key)
         if not entry or "nights" not in entry:
             return None
-        return Route(entry["origin"], entry["destination"], tuple(entry["nights"]), int(entry.get("bags", 0)))
+        return Route(entry["origin"], entry["destination"], tuple(entry["nights"]), int(entry.get("bags", 0)), bool(entry.get("combo")))
 
     def fares(self, key: str) -> Fares:
         entry = self.data["routes"].get(key)
@@ -173,12 +173,15 @@ class History:
         return runs
 
     # -- actualización ------------------------------------------------------
-    def record(self, result: RouteResult, now: datetime | None = None, partial: bool = False) -> None:
-        """Guarda una búsqueda. `partial`: solo una ventana pequeña (no cuenta como corrida completa)."""
+    def record(self, result: RouteResult, now: datetime | None = None, partial: bool = False, store_fares: bool = True) -> None:
+        """Guarda una búsqueda. `partial`: solo una ventana pequeña (no cuenta como corrida completa).
+        `store_fares=False`: solo el resumen (mínimos), p. ej. el viaje armado, que se recalcula de sus partes."""
         now = now or utcnow()
         route = result.route
         entry = self.route(route.key)
         entry.update(origin=route.origin, destination=route.destination, nights=list(route.nights), bags=route.bags)
+        if route.combo:
+            entry["combo"] = True
         if result.currency:
             entry["currency"] = result.currency
         if partial:
@@ -199,7 +202,8 @@ class History:
         entry["last"] = observation
         if entry.get("best") is None or price < entry["best"]["price"]:
             entry["best"] = observation
-        entry["fares"] = pack_fares(result.fares, route.nights)
+        if store_fares:
+            entry["fares"] = pack_fares(result.fares, route.nights)
         entry["fares_at"] = _iso(now)
         entry["runs"].append(
             {

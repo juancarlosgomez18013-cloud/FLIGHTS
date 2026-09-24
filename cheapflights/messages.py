@@ -249,28 +249,43 @@ def _connection_lines(config: Config, v: Verdict) -> list[str]:
 
 # -- aviso inmediato 🔥 ---------------------------------------------------------
 
+def _leg_links(config: Config, v: Verdict) -> str:
+    """Dos enlaces de solo ida para un viaje armado."""
+    ida = flights_link(config, v.origin, v.destination, v.out, v.out)
+    regreso = flights_link(config, v.destination, v.origin, v.back, v.back)
+    return f"{link('👉 Ver ida', ida)} · {link('Ver regreso', regreso)}"
+
+
 def format_super_alert(config: Config, v: Verdict, today: date) -> str:
-    kind = "solo ida" if v.one_way else "ida y vuelta"
-    lines = [
-        "🔥 *SÚPER BARATO · SOLO IDA*" if v.one_way else "🔥 *SÚPER BARATO*",
-        f"{_icon(v)} *{_title(config, v)} · {fmt_price(v.price, v.currency)}* {kind}",
-    ]
+    if v.one_way:
+        title, kind = "🔥 *SÚPER BARATO · SOLO IDA*", "solo ida"
+    elif v.armado:
+        title, kind = "🔥 *SÚPER BARATO · VIAJE ARMADO*", "ida y regreso"
+    else:
+        title, kind = "🔥 *SÚPER BARATO*", "ida y vuelta"
+    lines = [title, f"{_icon(v)} *{_title(config, v)} · {fmt_price(v.price, v.currency)}* {kind}"]
     normally = _normally(v)
     if normally:
         lines.append(normally)
     lines.append("")
-    when = fmt_date_short(v.out, today) if v.one_way else f"{fmt_trip_short(v.out, v.back, today)} · {fmt_nights(v.nights)}"
-    lines.append(f"📅 {when}")
+    if v.armado:
+        lines.append(f"🛫 Ida: {fmt_date_short(v.out, today)} · {fmt_price(v.legs[0], v.currency)}")
+        lines.append(f"🛬 Regreso: {fmt_date_short(v.back, today)} · {fmt_price(v.legs[1], v.currency)} ({fmt_nights(v.nights)})")
+    else:
+        when = fmt_date_short(v.out, today) if v.one_way else f"{fmt_trip_short(v.out, v.back, today)} · {fmt_nights(v.nights)}"
+        lines.append(f"📅 {when}")
     for extra in (_holiday_short(v, today), _bags_line(v)):
         if extra:
             lines.append(extra)
-    if v.split_price is not None:
-        lines.append(f"✂️ En dos tramos solo ida: {fmt_price(v.split_price, v.currency)}")
     lines.extend(_connection_lines(config, v))
     history = _history_line(v)
     if history:
         lines.append(history)
-    lines.append(link("👉 Ver vuelo", _link(config, v)))
+    if v.armado:
+        lines.append("ℹ️ Son dos tiquetes separados: pueden ser de aerolíneas distintas.")
+        lines.append(_leg_links(config, v))
+    else:
+        lines.append(link("👉 Ver vuelo", _link(config, v)))
     return "\n".join(lines)
 
 
@@ -283,8 +298,10 @@ def _item(config: Config, v: Verdict, today: date, icon: str | None = None) -> s
         f"{fmt_price(v.price, v.currency)} · {fmt_range(v.out, v.back, today)}{party}{savings}"
     )
     extra = []
-    if v.split_price is not None:
-        extra.append(f"en dos tramos solo ida: {fmt_price(v.split_price, v.currency)}")
+    if v.armado:
+        ida = link(f"ida {fmt_price(v.legs[0], v.currency)}", flights_link(config, v.origin, v.destination, v.out, v.out))
+        regreso = link(f"regreso {fmt_price(v.legs[1], v.currency)}", flights_link(config, v.destination, v.origin, v.back, v.back))
+        extra.append(f"✂️ armado: {ida} + {regreso}")
     if v.zone.kind == "international" and v.origin != config.home:
         via = f"sale de {config.city(v.origin)}"
         if v.feeder_price is not None:

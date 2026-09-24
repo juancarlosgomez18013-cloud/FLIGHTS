@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 from cheapflights.config import LevelSettings
-from cheapflights.levels import CHEAP, SUPER, best_per_destination, classify, classify_from_history, enrich, feeder_cost, split_cost
+from cheapflights.levels import CHEAP, SUPER, best_per_destination, classify, classify_from_history, classify_trip, combine, enrich, feeder_cost
 from cheapflights.search import Route, RouteResult
 
 from .conftest import NOW, TODAY, ZONE, fares, route, runs
@@ -170,18 +170,29 @@ def test_one_way_ignores_round_trip_fixed_prices():
     assert classify(R, fares([150_000] * 40), "COP", z, LEVELS, [], TODAY).level == SUPER
 
 
-def test_split_price_when_two_one_ways_are_cheaper(history, config):
+def test_combine_picks_cheapest_way_per_trip_in_any_dates():
+    rt = {(_iso(10), _iso(13)): 180_000.0, (_iso(20), _iso(22)): 90_000.0}
+    ida = {(_iso(10), _iso(10)): 60_000.0, (_iso(20), _iso(20)): 70_000.0}
+    regreso = {(_iso(13), _iso(13)): 70_000.0, (_iso(14), _iso(14)): 40_000.0, (_iso(22), _iso(22)): 50_000.0, (_iso(40), _iso(40)): 1.0}
+    fares, legs = combine(rt, ida, regreso, (2, 5))
+    assert fares[(_iso(10), _iso(13))] == 130_000 and legs[(_iso(10), _iso(13))] == (60_000, 70_000)  # armado gana
+    assert fares[(_iso(10), _iso(14))] == 100_000 and legs[(_iso(10), _iso(14))] == (60_000, 40_000)  # fechas sin ida y vuelta
+    assert fares[(_iso(20), _iso(22))] == 90_000 and (_iso(20), _iso(22)) not in legs  # el ida y vuelta normal gana
+    assert (_iso(10), _iso(40)) not in fares  # 30 noches: fuera del rango
+
+
+def test_best_trip_can_be_armado_with_two_airlines(history, config):
     zone = config.zone("Costa Caribe")
     r = zone.route("BGA", "CTG")
-    out, back = _iso(10), _iso(13)
-    history.record(RouteResult(route("BGA", "CTG", (0, 0)), {(out, out): 60_000.0}), NOW)
-    history.record(RouteResult(route("CTG", "BGA", (0, 0)), {(back, back): 70_000.0}), NOW)
-    assert split_cost(history, r, out, back) == 130_000
-    assert split_cost(history, r, out, _iso(14)) is None  # no hay tramo de regreso ese día
-    v = classify(r, {(out, back): 180_000.0} | fares([300_000] * 30), "COP", zone, LEVELS, [], TODAY)
-    assert enrich(v, history, config, TODAY).split_price == 130_000
-    v = classify(r, {(out, back): 120_000.0} | fares([300_000] * 30), "COP", zone, LEVELS, [], TODAY)
-    assert enrich(v, history, config, TODAY).split_price is None  # el ida y vuelta ya es más barato
+    history.record(RouteResult(r, fares([320_000] * 60)), NOW)  # ida y vuelta normal: siempre $320.000
+    history.record(RouteResult(r.outbound, {(d, d): 170_000.0 for d, _ in fares([1] * 60)} | {(_iso(20), _iso(20)): 52_000.0}), NOW)
+    history.record(RouteResult(r.inbound, {(d, d): 170_000.0 for d, _ in fares([1] * 60)} | {(_iso(23), _iso(23)): 66_000.0}), NOW)
+    v = classify_trip(zone, r, history, LEVELS, [], TODAY)
+    assert v.armado and v.legs == (52_000, 66_000) and v.price == 118_000
+    assert (v.out, v.back) == (_iso(20), _iso(23)) and v.level == SUPER and v.alert_key == "CTG"
+    assert v.route.combo and v.key == "BGA-CTG/2-5n/0m/armado"
+    assert enrich(v, history, config, TODAY).other_bag_price is None  # la otra maleta no aplica al armado
+    assert classify_from_history(zone, r, history, LEVELS, TODAY).legs == (52_000, 66_000)
 
 
 def test_one_way_verdicts_are_kept_apart_from_round_trips():

@@ -282,16 +282,21 @@ def test_one_way_alert_and_link(config):
     assert_telegram_ok(text)
 
 
-def test_split_price_line_and_summary_one_way_section(config):
-    rt = replace(_super_domestic(config), split_price=80_000.0)
-    text = format_alerts(config, [rt], TODAY)[0]
-    assert "✂️ En dos tramos solo ida: $80.000" in text
+def test_armado_alert_and_summary_one_way_section(config):
+    armado = replace(_super_domestic(config), legs=(40_000.0, 58_958.0))
+    text = format_alerts(config, [armado], TODAY)[0]
+    assert "🔥 *SÚPER BARATO · VIAJE ARMADO*" in text
+    assert "🏖️ *Barranquilla · $98.958* ida y regreso" in text
+    assert "🛫 Ida: mié 14 oct · $40.000" in text and "🛬 Regreso: vie 16 oct · $58.958 (2 noches)" in text
+    assert "dos tiquetes separados" in text and "👉 Ver ida" in text and "Ver regreso" in text
+    assert text.count("one+way") == 2
+    assert_telegram_ok(text)
     zone = config.zone("Costa Caribe")
     ow = classify(route("BGA", "CTG", (0, 0)), {(d, d): p for (d, _), p in fares([50_000] + [180_000] * 40).items()}, "COP", zone, LEVELS, [], TODAY)
-    msgs = format_summary(config, {"domestic": [rt, ow]}, TODAY)
+    msgs = format_summary(config, {"domestic": [armado, ow]}, TODAY)
     text = "\n".join(msgs)
     assert text.index("🔥 *Súper baratos*") < text.index("🎫 *Solo ida*")
     assert "• 🔥 *[Bucaramanga → Cartagena](" in text and "$50.000 · 24 sep" in text
-    assert "en dos tramos solo ida: $80.000" in text
+    assert "✂️ armado: [ida $40.000](" in text and "[regreso $58.958](" in text
     for m in msgs:
         assert_telegram_ok(m)

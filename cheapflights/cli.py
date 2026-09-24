@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import random
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,7 +25,7 @@ import click
 from . import __version__
 from .config import KIND_LABEL, Config, Zone, load_config
 from .history import History
-from .levels import SUPER, Verdict, best_per_destination, classify, enrich
+from .levels import SUPER, Verdict, best_per_destination, classify, classify_trip, enrich, trip_fares
 from .messages import (
     BAGS_TEXT,
     fmt_nights,
@@ -176,44 +176,55 @@ class _Runner:
             click.echo(f"   {name}: " + (f"desde {fmt_price(best[2], r.currency)} · {fmt_trip_short(best[0], best[1], self.today)}" if best else "sin precios"))
 
     def zone(self, zone: Zone) -> list[Verdict]:
-        """Busca una zona: primero la maleta que decide, luego la otra alrededor de cada oferta."""
+        """Busca una zona: ida y vuelta, tramos solo ida (si aplica) y la otra maleta alrededor de cada oferta."""
         start, end = date_window(zone.months_ahead, self.config.search.max_days_ahead, self.today)
         routes = zone.routes()
         lo, hi = zone.nights
-        click.echo(f"\n{zone.label} · {len(routes)} ruta(s) · {lo}-{hi} noches · {BAGS_TEXT[zone.bags]} · {start} → {end}")
+        extra = " · + solo ida" if zone.one_way else ""
+        click.echo(f"\n{zone.label} · {len(routes)} ruta(s) · {lo}-{hi} noches · {BAGS_TEXT[zone.bags]}{extra} · {start} → {end}")
         results = self.search([(r, start, end) for r in routes])
+        one_way_results = self.search([(r, start, end) for r in zone.one_way_routes()])
         verdicts: list[Verdict] = []
-        for result in results:
-            past = self.history.runs_before_current_fares(result.route.key)
-            v = classify(result.route, result.fares, result.currency, zone, self.config.levels, past, self.today)
+        # El viaje a cada destino: el ida y vuelta normal o, si sale más barato, armado con dos tramos solo ida.
+        for r in routes:
+            if zone.one_way:
+                combo = replace(r, combo=True)
+                v = classify_trip(zone, r, self.history, self.config.levels, self.history.runs(combo.key), self.today)
+                if v:
+                    fares, _ = trip_fares(self.history, r)
+                    self.history.record(RouteResult(combo, fares, v.currency), self.now, store_fares=False)
+            else:
+                result = next((x for x in results if x.route == r), None)
+                v = None
+                if result:
+                    past = self.history.runs_before_current_fares(r.key)
+                    v = classify(r, result.fares, result.currency, zone, self.config.levels, past, self.today)
             if v:
                 verdicts.append(v)
-        # La otra opción de maleta solo se consulta en una ventana alrededor de cada oferta:
+        # La otra opción de maleta solo se consulta en una ventana alrededor de cada oferta normal:
         # así el aviso trae los dos precios sin duplicar todas las peticiones a Google.
-        if self.config.search.both_bag_prices and verdicts:
-            jobs = [(v.route.other_bags, *window_around(v.out, zone.nights, start, end)) for v in verdicts]
+        if self.config.search.both_bag_prices:
+            jobs = [(v.route.base.other_bags, *window_around(v.out, zone.nights, start, end)) for v in verdicts if not v.armado]
             self.search(jobs, partial=True)
-        # Solo ida en los dos sentidos: avisos propios y comparación con dos tramos sueltos.
-        one_way_results = self.search([(r, start, end) for r in zone.one_way_routes()])
         for result in one_way_results:
             past = self.history.runs_before_current_fares(result.route.key)
             v = classify(result.route, result.fares, result.currency, zone, self.config.levels, past, self.today)
             if v:
                 verdicts.append(v)
-        enriched = {v.key: enrich(v, self.history, self.config, self.today) for v in verdicts}
-        for result in results + one_way_results:
-            r = result.route
-            arrow = "→" if r.one_way else "⇄"
-            name = f"{self.config.city(r.origin)} {arrow} {self.config.city(r.destination)}" + (" (solo ida)" if r.one_way else "")
-            v = enriched.get(r.key)
-            if v is None:
-                click.echo(f"   {name}: sin precios")
-                continue
+        enriched = [enrich(v, self.history, self.config, self.today) for v in verdicts]
+        for v in enriched:
+            arrow = "→" if v.one_way else "⇄"
+            name = f"{self.config.city(v.origin)} {arrow} {self.config.city(v.destination)}" + (" (solo ida)" if v.one_way else "")
             when = fmt_trip_short(v.out, v.back, self.today) + ("" if v.one_way else f" ({fmt_nights(v.nights)})")
-            split = f" · en dos tramos {fmt_price(v.split_price, v.currency)}" if v.split_price else ""
-            click.echo(f"   {name}: {fmt_price(v.price, v.currency)} · {when}{_bags_note(v)}{split} {LEVEL_ICON[v.level]}".rstrip())
+            how = f" · armado: ida {fmt_price(v.legs[0], v.currency)} + regreso {fmt_price(v.legs[1], v.currency)}" if v.armado else ""
+            click.echo(f"   {name}: {fmt_price(v.price, v.currency)} · {when}{_bags_note(v)}{how} {LEVEL_ICON[v.level]}".rstrip())
+        found = {(v.origin, v.destination, v.one_way) for v in enriched}
+        for r in routes + zone.one_way_routes():
+            if (r.origin, r.destination, r.one_way) not in found:
+                arrow = "→" if r.one_way else "⇄"
+                click.echo(f"   {self.config.city(r.origin)} {arrow} {self.config.city(r.destination)}{' (solo ida)' if r.one_way else ''}: sin precios")
         self.history.save()  # por zona: un corte a mitad de camino no pierde lo ya buscado
-        return list(enriched.values())
+        return enriched
 
 
 def run_zones(
@@ -246,6 +257,10 @@ def run_zones(
                 candidates.append(v)
 
     supers = best_per_destination(candidates)
+    # Un tramo solo ida que ya va dentro de un viaje armado 🔥 no se avisa dos veces.
+    in_trips = {(v.route.base.outbound.pair, v.out) for v in supers if v.armado}
+    in_trips |= {(v.route.base.inbound.pair, v.back) for v in supers if v.armado}
+    supers = [v for v in supers if not (v.one_way and (v.pair, v.out) in in_trips)]
     super_keys = {v.alert_key for v in supers}
     for key in searched_keys - super_keys:
         history.clear_alert(key)  # la oferta ya no está: si vuelve, se avisa otra vez
@@ -433,6 +448,8 @@ def ver(obj, route: str, top: int) -> None:
             click.echo(f"\n{config.city(r.origin)} → {config.city(r.destination)}", nl=False)
         lo, hi = r.nights
         title = f"\n{'solo ida' if r.one_way else f'{lo}-{hi} noches'} · {BAGS_TEXT[r.bags]}"
+        if r.combo:
+            title += " · mejor viaje (normal o armado con dos tramos)"
         if history.is_partial(key):
             title += " (solo alrededor de la última oferta)"
         click.echo(title)

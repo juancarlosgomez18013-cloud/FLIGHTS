@@ -6,7 +6,7 @@ from datetime import datetime
 
 from .config import KINDS, Config
 from .history import History
-from .levels import LEVEL_RANK, Verdict, best_per_destination, classify_from_history, enrich, is_stale
+from .levels import LEVEL_RANK, Verdict, best_per_destination, classify_from_history, enrich, is_stale, trip_fares
 from .messages import best_month
 
 STALE_DAYS = 3
@@ -64,7 +64,7 @@ def plan_rows(config: Config, history: History, now: datetime) -> dict[str, list
             if not candidates:
                 continue
             best = min(candidates, key=lambda v: (v.total, LEVEL_RANK[v.level], v.out))
-            month = best_month(history.fares(best.key), best.cheap_limit, today)
+            month = best_month(trip_fares(history, best.route)[0] if best.zone.one_way else history.fares(best.key), best.cheap_limit, today)
             rows[kind].append((best, month))
     return rows
 

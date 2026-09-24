@@ -25,7 +25,7 @@ from typing import Any
 
 from .config import Config, LevelSettings, Zone
 from .history import History, midrank_percentile, parse_ts
-from .search import ONE_WAY, Fares, Route, nights_between
+from .search import Fares, Route, nights_between
 
 SUPER = "super"
 CHEAP = "barato"
@@ -54,7 +54,7 @@ class Verdict:
     same_price_trips: tuple[tuple[str, str], ...] = ()  # otros viajes al mismo precio (±1 %)
     cheap_trips: tuple[tuple[str, str, float], ...] = ()  # otros viajes baratos (precio distinto), por fecha
     other_bag_price: float | None = None  # el mismo viaje con la otra opción de maleta
-    split_price: float | None = None  # el mismo viaje armado con dos tramos solo ida, si sale más barato
+    legs: tuple[float, float] | None = None  # viaje armado con dos tramos solo ida: (precio ida, precio regreso)
     feeder_price: float | None = None  # conexión casa ⇄ hub, ida y vuelta
     feeder_out: str | None = None
     feeder_back: str | None = None
@@ -80,6 +80,11 @@ class Verdict:
     @property
     def one_way(self) -> bool:
         return self.route.one_way
+
+    @property
+    def armado(self) -> bool:
+        """True si el precio es la suma de dos tramos solo ida (posiblemente de aerolíneas distintas)."""
+        return self.legs is not None
 
     @property
     def alert_key(self) -> str:
@@ -226,27 +231,53 @@ def other_bag_price(history: History, route: Route, out: str, back: str) -> floa
 
 
 def with_other_bag(v: Verdict, history: History) -> Verdict:
-    if v.one_way:
+    if v.one_way or v.armado:
         return v
-    return replace(v, other_bag_price=other_bag_price(history, v.route, v.out, v.back))
+    return replace(v, other_bag_price=other_bag_price(history, v.route.base, v.out, v.back))
 
 
-def split_cost(history: History, route: Route, out: str, back: str) -> float | None:
-    """Mismo viaje con dos tramos solo ida (ida y regreso por separado), si ambos tienen precio."""
-    ida = history.fares(Route(route.origin, route.destination, ONE_WAY, route.bags).key).get((out, out))
-    vuelta = history.fares(Route(route.destination, route.origin, ONE_WAY, route.bags).key).get((back, back))
-    if ida is None or vuelta is None:
+def combine(round_trip: Fares, outbound: Fares, inbound: Fares, nights: tuple[int, int]) -> tuple[Fares, dict[tuple[str, str], tuple[float, float]]]:
+    """El mejor precio de cada viaje (ida, vuelta): ida y vuelta normal o dos tramos solo ida sueltos.
+
+    Devuelve (precios, tramos) donde `tramos[(ida, vuelta)] = (precio ida, precio regreso)` solo para
+    los viajes en que armarlo con dos tramos sale más barato (o no hay ida y vuelta para esas fechas).
+    """
+    merged: Fares = dict(round_trip)
+    legs: dict[tuple[str, str], tuple[float, float]] = {}
+    back_by_day = {day: price for (day, _), price in inbound.items()}
+    lo, hi = nights
+    for (out, _), price_out in outbound.items():
+        start = date.fromisoformat(out)
+        for n in range(lo, hi + 1):
+            back = (start + timedelta(days=n)).isoformat()
+            price_back = back_by_day.get(back)
+            if price_back is None:
+                continue
+            total = price_out + price_back
+            if total < merged.get((out, back), float("inf")):
+                merged[(out, back)] = total
+                legs[(out, back)] = (price_out, price_back)
+    return merged, legs
+
+
+def trip_fares(history: History, route: Route) -> tuple[Fares, dict[tuple[str, str], tuple[float, float]]]:
+    """Precios del mejor viaje (normal o armado) desde lo guardado de sus partes."""
+    base = route.base
+    round_trip = {} if history.is_partial(base.key) else history.fares(base.key)
+    return combine(round_trip, history.fares(base.outbound.key), history.fares(base.inbound.key), base.nights)
+
+
+def classify_trip(zone: Zone, route: Route, history: History, levels: LevelSettings, past_runs: list[dict[str, Any]], today: date) -> Verdict | None:
+    """Clasifica el mejor viaje a un destino: ida y vuelta normal o armado con dos tramos solo ida."""
+    fares, legs = trip_fares(history, route)
+    if not fares:
         return None
-    return ida + vuelta
-
-
-def with_split(v: Verdict, history: History) -> Verdict:
-    if v.one_way or not v.zone.one_way:
-        return v
-    split = split_cost(history, v.route, v.out, v.back)
-    if split is None or split >= v.price:
-        return v
-    return replace(v, split_price=split)
+    combo = replace(route.base, combo=True)
+    currency = history.currency(route.base.key) or history.currency(route.base.outbound.key)
+    v = classify(combo, fares, currency, zone, levels, past_runs, today)
+    if v and (v.out, v.back) in legs:
+        v = replace(v, legs=legs[(v.out, v.back)])
+    return v
 
 
 def feeder_cost(
@@ -291,7 +322,7 @@ def enrich(v: Verdict, history: History, config: Config, today: date) -> Verdict
     """Completa un veredicto con el precio de la otra maleta, los dos tramos sueltos y la conexión desde casa."""
     if v.one_way:
         return v
-    return with_feeder(with_split(with_other_bag(v, history), history), history, config, today)
+    return with_feeder(with_other_bag(v, history), history, config, today)
 
 
 def best_per_destination(verdicts: list[Verdict]) -> list[Verdict]:
@@ -308,6 +339,9 @@ def best_per_destination(verdicts: list[Verdict]) -> list[Verdict]:
 
 def classify_from_history(zone: Zone, route: Route, history: History, levels: LevelSettings, today: date) -> Verdict | None:
     """Clasifica usando los precios guardados (para el resumen y el plan, sin buscar de nuevo)."""
+    if zone.one_way and not route.one_way:
+        combo = replace(route.base, combo=True)
+        return classify_trip(zone, route, history, levels, history.runs_before_current_fares(combo.key), today)
     fares = history.fares(route.key)
     if not fares or history.is_partial(route.key):
         return None
