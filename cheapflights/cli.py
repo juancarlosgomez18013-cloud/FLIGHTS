@@ -6,7 +6,7 @@
   python -m cheapflights plan                         # 📅 plan semanal por zona
   python -m cheapflights probar                       # ✅ mensaje de prueba al canal
   python -m cheapflights zonas                        # qué se busca y con qué precios
-  python -m cheapflights ver BGA-BOG                  # fechas más baratas guardadas
+  python -m cheapflights ver BGA-CTG                  # viajes más baratos guardados
 
   --dry-run: no envía, imprime.  --mock: no consulta Google (pruebas).
 """
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import logging
 import random
-from dataclasses import dataclass, field
 import sys
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,10 +25,31 @@ import click
 from . import __version__
 from .config import KIND_LABEL, Config, Zone, load_config
 from .history import History
-from .levels import SUPER, Verdict, best_per_destination, classify, with_feeder
-from .messages import fmt_date_short, fmt_price, format_alerts_packed, format_plan, format_summary, format_test
+from .levels import SUPER, Verdict, best_per_destination, classify, enrich
+from .messages import (
+    BAGS_TEXT,
+    fmt_nights,
+    fmt_price,
+    fmt_trip_short,
+    format_alerts_packed,
+    format_plan,
+    format_summary,
+    format_test,
+)
 from .notify import Notifier, build_notifier, is_real
-from .search import RateLimited, RouteResult, Searcher, date_window, google_searcher, search_routes
+from .search import (
+    Backoff,
+    RateLimited,
+    Route,
+    RouteResult,
+    Searcher,
+    SearchJob,
+    date_window,
+    google_searcher,
+    nights_between,
+    search_routes,
+    window_around,
+)
 from .summary import plan_rows, sample_verdict, summary_data
 
 log = logging.getLogger("cheapflights")
@@ -39,21 +60,25 @@ KIND_ALIASES = {
     "todo": "all", "all": "all",
 }
 LEVEL_ICON = {SUPER: "🔥", "barato": "👍", None: ""}
+FEEDER_LABEL = "🔗 Conexión desde casa"
 
 
 def mock_searcher(seed: int = 0) -> Searcher:
     """Precios inventados pero estables, para probar todo sin tocar Google."""
 
-    def search(origin: str, destination: str, from_date: date, to_date: date) -> RouteResult:
-        rnd = random.Random(f"{seed}:{origin}:{destination}")
-        domestic = origin == "BGA"
-        base = rnd.uniform(80_000, 400_000) if domestic else rnd.uniform(250_000, 2_500_000)
-        cal = {}
+    def search(route: Route, from_date: date, to_date: date) -> RouteResult:
+        rnd = random.Random(f"{seed}:{route.pair}")
+        domestic = route.origin == "BGA"
+        base = rnd.uniform(150_000, 700_000) if domestic else rnd.uniform(500_000, 4_500_000)
+        if route.bags:
+            base *= 1.35  # la maleta encarece
+        fares = {}
         d = from_date
         while d <= to_date:
-            cal[d.isoformat()] = round(base * rnd.uniform(0.6, 1.6), -3)
+            for n in range(route.nights[0], route.nights[1] + 1):
+                fares[(d.isoformat(), (d + timedelta(days=n)).isoformat())] = round(base * rnd.uniform(0.6, 1.6), -3)
             d += timedelta(days=1)
-        return RouteResult(origin=origin, destination=destination, calendar=cal, currency="COP")
+        return RouteResult(route=route, fares=fares, currency="COP")
 
     return search
 
@@ -75,6 +100,7 @@ class RunReport:
     already_alerted: int = 0
     sent_ok: int = 0
     sent_total: int = 0
+    requests: int = 0  # búsquedas hechas (cada una son varias peticiones a Google)
 
     @property
     def sent(self) -> tuple[int, int]:
@@ -106,6 +132,80 @@ def announce_channel(notifier: Notifier) -> None:
     click.echo(f"📨 Canal de avisos: {notifier.name}")
 
 
+def _bags_note(v: Verdict) -> str:
+    if v.other_bag_price is None:
+        return ""
+    return f" · {BAGS_TEXT[1 - v.bags]} {fmt_price(v.other_bag_price, v.currency)}"
+
+
+class _Runner:
+    """Ejecuta las búsquedas de una corrida y va guardando el historial."""
+
+    def __init__(self, config: Config, history: History, searcher: Searcher, delay: float, now: datetime, report: RunReport):
+        self.config, self.history, self.searcher, self.delay, self.now, self.report = config, history, searcher, delay, now, report
+        self.today = config.local_today(now)
+
+    def search(self, jobs: list[SearchJob], partial: bool = False) -> list[RouteResult]:
+        """Busca y guarda. Con `RateLimited`, guarda lo alcanzado y deja constancia en el reporte."""
+        if not jobs or self.report.rate_limited:
+            return []
+        try:
+            results = search_routes(jobs, self.searcher, delay_seconds=self.delay,
+                                    on_error=lambda r, e: self.report.failures.append(f"{r}: {e}"))
+        except RateLimited as exc:
+            results = list(getattr(exc, "partial", []) or [])
+            self.report.rate_limited = str(exc)
+            click.secho(f"✖ {exc}. Se detiene para no empeorar el bloqueo.", fg="red")
+        for r in results:
+            self.history.record(r, self.now, partial=partial)
+        self.report.requests += len(results)
+        return results
+
+    def feeders(self) -> None:
+        """Conexiones casa ⇄ hub (ida y vuelta), para poder sumar el total de los internacionales."""
+        routes = self.config.feeder_searches()
+        if not routes:
+            return
+        start, end = date_window(self.config.feeder_months, self.config.search.max_days_ahead, self.today)
+        click.echo(f"\n{FEEDER_LABEL} · {len(routes)} búsqueda(s) · {start} → {end}")
+        for r in self.search([(r, start, end) for r in routes]):
+            name = f"{self.config.city(r.route.origin)} ⇄ {self.config.city(r.route.destination)} ({BAGS_TEXT[r.route.bags]})"
+            best = r.cheapest
+            click.echo(f"   {name}: " + (f"desde {fmt_price(best[2], r.currency)} · {fmt_trip_short(best[0], best[1], self.today)}" if best else "sin precios"))
+
+    def zone(self, zone: Zone) -> list[Verdict]:
+        """Busca una zona: primero la maleta que decide, luego la otra alrededor de cada oferta."""
+        start, end = date_window(zone.months_ahead, self.config.search.max_days_ahead, self.today)
+        routes = zone.routes()
+        lo, hi = zone.nights
+        click.echo(f"\n{zone.label} · {len(routes)} ruta(s) · {lo}-{hi} noches · {BAGS_TEXT[zone.bags]} · {start} → {end}")
+        results = self.search([(r, start, end) for r in routes])
+        verdicts: list[Verdict] = []
+        for result in results:
+            past = self.history.runs_before_current_fares(result.route.key)
+            v = classify(result.route, result.fares, result.currency, zone, self.config.levels, past, self.today)
+            if v:
+                verdicts.append(v)
+        # La otra opción de maleta solo se consulta en una ventana alrededor de cada oferta:
+        # así el aviso trae los dos precios sin duplicar todas las peticiones a Google.
+        if self.config.search.both_bag_prices and verdicts:
+            jobs = [(v.route.other_bags, *window_around(v.out, zone.nights, start, end)) for v in verdicts]
+            self.search(jobs, partial=True)
+        enriched = {v.route.pair: enrich(v, self.history, self.config, self.today) for v in verdicts}
+        for result in results:
+            name = f"{self.config.city(result.route.origin)} ⇄ {self.config.city(result.route.destination)}"
+            v = enriched.get(result.route.pair)
+            if v is None:
+                click.echo(f"   {name}: sin precios")
+                continue
+            click.echo(
+                f"   {name}: {fmt_price(v.price, v.currency)} · {fmt_trip_short(v.out, v.back, self.today)} "
+                f"({fmt_nights(v.nights)}){_bags_note(v)} {LEVEL_ICON[v.level]}".rstrip()
+            )
+        self.history.save()  # por zona: un corte a mitad de camino no pierde lo ya buscado
+        return list(enriched.values())
+
+
 def run_zones(
     config: Config,
     zones: list[Zone],
@@ -120,40 +220,22 @@ def run_zones(
     today = config.local_today(now)
     delay = config.search.request_delay_seconds if delay is None else delay
     report = RunReport()
+    runner = _Runner(config, history, searcher, delay, now, report)
     candidates: list[Verdict] = []
     searched_destinations: set[str] = set()
+
+    if any(z.kind == "international" for z in zones):
+        runner.feeders()
+        history.save()
     for zone in zones:
-        start, end = date_window(zone.months_ahead, config.search.max_days_ahead, today)
-        routes = zone.routes()
-        click.echo(f"\n{zone.label} · {len(routes)} ruta(s) · {start} → {end}")
-        try:
-            results = search_routes(
-                routes, searcher, start, end, delay_seconds=delay,
-                on_error=lambda r, e: report.failures.append(f"{r}: {e}"),
-            )
-        except RateLimited as exc:
-            results = list(getattr(exc, "partial", []) or [])
-            report.rate_limited = str(exc)
-            click.secho(f"✖ {exc}. Se detiene para no empeorar el bloqueo.", fg="red")
-        for result in results:
-            past = history.runs(result.route)
-            verdict = classify(result.origin, result.destination, result.calendar, result.currency,
-                               zone, config.levels, past, today)
-            history.record(result, now)
-            searched_destinations.add(result.destination)
-            name = f"{config.city(result.origin)} → {config.city(result.destination)}"
-            if verdict is None:
-                click.echo(f"   {name}: sin precios")
-                continue
-            icon = LEVEL_ICON[verdict.level]
-            click.echo(f"   {name}: {fmt_price(verdict.price, verdict.currency)} · {fmt_date_short(verdict.date, today)} {icon}".rstrip())
-            if verdict.level == SUPER:
-                candidates.append(verdict)
-        history.save()  # por zona: un corte a mitad de camino no pierde lo ya buscado
         if report.rate_limited:
             break
+        for v in runner.zone(zone):
+            searched_destinations.add(v.destination)
+            if v.level == SUPER:
+                candidates.append(v)
 
-    supers = best_per_destination([with_feeder(v, history, config.home, today) for v in candidates])
+    supers = best_per_destination(candidates)
     super_dests = {v.destination for v in supers}
     for dest in searched_destinations - super_dests:
         history.clear_alert(dest)  # la oferta ya no está: si vuelve, se avisa otra vez
@@ -166,7 +248,7 @@ def run_zones(
             report.sent_ok += int(ok)
             if ok and is_real(notifier):  # sin canal real no se "gastan" los avisos
                 for v in verdicts:
-                    history.mark_alerted(v.destination, v.price, v.date, v.route, now)
+                    history.mark_alerted(v.destination, v.price, v.out, v.back, v.key, now)
                     report.alerted.append(v)
     history.save()
     if report.already_alerted:
@@ -174,7 +256,7 @@ def run_zones(
     return report
 
 
-@click.group(help="Rastreador de vuelos baratos con avisos por Telegram o WhatsApp.")
+@click.group(help="Rastreador de viajes baratos (ida y vuelta) con avisos por Telegram o WhatsApp.")
 @click.version_option(__version__)
 @click.option("--config", "config_path", default="config.yaml", show_default=True, type=click.Path(exists=True, dir_okay=False))
 @click.option("--history", "history_path", default="data/history.json", show_default=True)
@@ -202,16 +284,21 @@ def _finish(notifier: Notifier, sent: tuple[int, int]) -> None:
 @click.option("--zona", "zone", default=None, help="Nombre de una zona de config.yaml")
 @click.option("--dry-run", is_flag=True, help="No envía; imprime los mensajes")
 @click.option("--mock", is_flag=True, help="No consulta Google; usa precios inventados")
-@click.option("--delay", type=float, default=None, help="Segundos entre rutas")
+@click.option("--delay", type=float, default=None, help="Segundos entre búsquedas")
 @click.pass_obj
 def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: float | None) -> None:
-    """Busca precios, guarda el historial y avisa lo 🔥 súper barato."""
+    """Busca precios de ida y vuelta, guarda el historial y avisa lo 🔥 súper barato."""
     config: Config = obj["config"]
     zones = _select_zones(config, kind, zone)
-    searcher = mock_searcher() if mock else google_searcher(config.currency, config.country, config.language)
+    searcher = mock_searcher() if mock else google_searcher(
+        config.currency, config.country, config.language,
+        parallel_requests=config.search.parallel_requests,
+        requests_per_second=config.search.requests_per_second,
+        backoff=Backoff(config.search.rate_limit_wait_seconds, config.search.rate_limit_max_waits),
+    )
     notifier = _notifier(config, dry_run)
     report = run_zones(config, zones, obj["history"], searcher, notifier, delay=0 if mock else delay)
-    click.echo(f"\n✔ {len(report.alerted)} aviso(s) 🔥 enviados · {len(report.failures)} ruta(s) con error")
+    click.echo(f"\n✔ {len(report.alerted)} aviso(s) 🔥 enviados · {report.requests} búsqueda(s) · {len(report.failures)} con error")
     for f in report.failures:
         click.secho(f"   ⚠ {f}", fg="yellow")
     if not is_real(notifier) and report.sent_total and not dry_run:
@@ -277,7 +364,7 @@ def probar(obj, dry_run: bool) -> None:
 @cli.command("zonas")
 @click.pass_obj
 def zonas(obj) -> None:
-    """Lista las zonas, sus destinos y los precios fijos que tengas (si hay)."""
+    """Lista las zonas, sus destinos, noches, maleta y los precios fijos que tengas (si hay)."""
     config: Config = obj["config"]
     total = 0
     for kind in ("domestic", "international"):
@@ -289,7 +376,8 @@ def zonas(obj) -> None:
             n = len(z.routes())
             total += n
             desde = ", ".join(config.city(o) for o in z.origins)
-            click.echo(f"  {z.label}  (desde {desde} · {z.months_ahead} meses · {n} rutas)")
+            lo, hi = z.nights
+            click.echo(f"  {z.label}  (desde {desde} · {z.months_ahead} meses · {lo}-{hi} noches · 🔥 {BAGS_TEXT[z.bags]} · {n} rutas)")
             cities = []
             for d in z.destinations:
                 sup, cheap = z.fixed_prices(d)
@@ -300,6 +388,11 @@ def zonas(obj) -> None:
                     fixed.append(f"👍 hasta {fmt_price(cheap)}")
                 cities.append(config.city(d) + (f" ({', '.join(fixed)})" if fixed else ""))
             click.echo("     " + ", ".join(cities))
+    feeders = config.feeder_searches()
+    if feeders:
+        lo, hi = config.feeder_nights
+        click.echo(f"\n{FEEDER_LABEL}: " + ", ".join(sorted({f"{config.city(f.origin)} ⇄ {config.city(f.destination)}" for f in feeders}))
+                   + f" ({lo}-{hi} noches, para sumar el total de los internacionales)")
     click.echo(f"\nTotal: {total} rutas")
 
 
@@ -308,27 +401,40 @@ def zonas(obj) -> None:
 @click.option("--top", default=15, show_default=True)
 @click.pass_obj
 def ver(obj, route: str, top: int) -> None:
-    """Muestra las fechas más baratas guardadas de una ruta, ej. BGA-BOG."""
+    """Muestra los viajes más baratos guardados de una ruta, ej. BGA-CTG."""
     config: Config = obj["config"]
     history: History = obj["history"]
-    route = route.upper()
-    if not history.has_route(route):
-        raise click.ClickException(f"No hay historial para {route}. Rutas: {', '.join(history.routes()) or 'ninguna'}")
-    origin, destination = route.split("-")
+    pair = route.upper()
+    keys = history.keys_for_pair(pair) or ([pair] if history.has_route(pair) else [])
+    if not keys:
+        pairs = sorted({k.split("/")[0] for k in history.routes()})
+        raise click.ClickException(f"No hay historial para {pair}. Rutas: {', '.join(pairs) or 'ninguna'}")
+    origin, destination = pair.split("-")
     today = config.local_today()
-    click.echo(f"{config.city(origin)} → {config.city(destination)}")
-    best, last = history.best(route), history.last(route)
-    cur = history.currency(route)
-    if best:
-        click.echo(f"Mínimo histórico: {fmt_price(best['price'], cur)} · {fmt_date_short(best['date'], today)} (visto {best['seen_at'][:10]})")
-    if last:
-        pct = history.price_percentile(route, last["price"])
-        extra = f" · percentil {pct:.0f}" if pct is not None else ""
-        click.echo(f"Última búsqueda: {fmt_price(last['price'], cur)} · {fmt_date_short(last['date'], today)}{extra}")
-    click.echo(f"Búsquedas guardadas: {len(history.runs(route))}\n")
-    upcoming = {d: p for d, p in history.calendar(route).items() if d >= today.isoformat()}
-    for day, price in sorted(upcoming.items(), key=lambda kv: (kv[1], kv[0]))[:top]:
-        click.echo(f"  {fmt_date_short(day, today):<16} {fmt_price(price, cur)}")
+    click.echo(f"{config.city(origin)} ⇄ {config.city(destination)}")
+    for key in keys:
+        r = history.route_of(key)
+        if r is None:
+            continue
+        lo, hi = r.nights
+        title = f"\n{lo}-{hi} noches · {BAGS_TEXT[r.bags]}"
+        if history.is_partial(key):
+            title += " (solo alrededor de la última oferta)"
+        click.echo(title)
+        best, last = history.best(key), history.last(key)
+        cur = history.currency(key)
+        if best:
+            click.echo(f"  Mínimo histórico: {fmt_price(best['price'], cur)} · {fmt_trip_short(best['out'], best['back'], today)} (visto {best['seen_at'][:10]})")
+        if last:
+            pct = history.price_percentile(key, last["price"])
+            extra = f" · percentil {pct:.0f}" if pct is not None else ""
+            click.echo(f"  Última búsqueda: {fmt_price(last['price'], cur)} · {fmt_trip_short(last['out'], last['back'], today)}{extra}")
+        if history.runs(key):
+            click.echo(f"  Búsquedas guardadas: {len(history.runs(key))}")
+        upcoming = {k: p for k, p in history.fares(key).items() if k[0] > today.isoformat()}
+        for (out, back), price in sorted(upcoming.items(), key=lambda kv: (kv[1], kv[0]))[:top]:
+            trip = f"{fmt_trip_short(out, back, today)} ({fmt_nights(nights_between(out, back))})"
+            click.echo(f"    {trip:<42} {fmt_price(price, cur)}")
 
 
 def main() -> None:

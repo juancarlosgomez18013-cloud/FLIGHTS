@@ -6,7 +6,7 @@ from datetime import datetime
 
 from .config import KINDS, Config
 from .history import History
-from .levels import LEVEL_RANK, Verdict, best_per_destination, classify_from_history, is_stale, with_feeder
+from .levels import LEVEL_RANK, Verdict, best_per_destination, classify_from_history, enrich, is_stale
 from .messages import best_month
 
 STALE_DAYS = 3
@@ -21,16 +21,15 @@ def verdicts_for_kind(config: Config, history: History, kind: str, now: datetime
     found: list[Verdict] = []
     newest = None
     for zone in config.zones_of_kind(kind):
-        for origin, destination in zone.routes():
-            route = f"{origin}-{destination}"
-            seen = history.last_seen(route)
+        for route in zone.routes():
+            seen = history.last_seen(route.key)
             if seen and (newest is None or seen > newest):
                 newest = seen
-            if is_stale(history, route, now, STALE_DAYS):
+            if is_stale(history, route.key, now, STALE_DAYS):
                 continue
-            v = classify_from_history(zone, origin, destination, history, config.levels, today)
+            v = classify_from_history(zone, route, history, config.levels, today)
             if v:
-                found.append(with_feeder(v, history, config.home, today))
+                found.append(enrich(v, history, config, today))
     stale_days = None
     if newest is not None and not found:
         stale_days = (now - newest).total_seconds() / 86400
@@ -45,7 +44,7 @@ def summary_data(config: Config, history: History, now: datetime) -> tuple[dict[
     return by_kind, stale
 
 
-def plan_rows(config: Config, history: History, now: datetime) -> dict[str, list[tuple[Verdict, tuple[str, float] | None]]]:
+def plan_rows(config: Config, history: History, now: datetime) -> dict[str, list[tuple[Verdict, tuple[str, int] | None]]]:
     """Por cada zona: el destino más barato (total desde casa) y su mes más barato en general."""
     today = config.local_today(now)
     rows: dict[str, list] = {}
@@ -56,16 +55,16 @@ def plan_rows(config: Config, history: History, now: datetime) -> dict[str, list
         rows[kind] = []
         for zone in zones:
             candidates = []
-            for origin, destination in zone.routes():
-                if is_stale(history, f"{origin}-{destination}", now, STALE_DAYS * 3):
+            for route in zone.routes():
+                if is_stale(history, route.key, now, STALE_DAYS * 3):
                     continue
-                v = classify_from_history(zone, origin, destination, history, config.levels, today)
+                v = classify_from_history(zone, route, history, config.levels, today)
                 if v:
-                    candidates.append(with_feeder(v, history, config.home, today))
+                    candidates.append(enrich(v, history, config, today))
             if not candidates:
                 continue
-            best = min(candidates, key=lambda v: (v.total, LEVEL_RANK[v.level], v.date))
-            month = best_month(history.calendar(best.route), best.cheap_limit, today)
+            best = min(candidates, key=lambda v: (v.total, LEVEL_RANK[v.level], v.out))
+            month = best_month(history.fares(best.key), best.cheap_limit, today)
             rows[kind].append((best, month))
     return rows
 
