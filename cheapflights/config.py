@@ -26,6 +26,9 @@ class SearchSettings:
     max_days_ahead: int = 300
     both_bag_prices: bool = True  # consultar también la otra maleta (alrededor de cada oferta) para mostrar ambos precios
     parallel_requests: int = 3  # peticiones simultáneas a Google dentro de una búsqueda
+    requests_per_second: int = 2  # tope global de peticiones por segundo
+    rate_limit_wait_seconds: float = 90.0  # si Google bloquea (429), cuánto esperar antes de reintentar
+    rate_limit_max_waits: int = 3  # cuántas esperas por corrida antes de rendirse
 
 
 @dataclass(frozen=True)

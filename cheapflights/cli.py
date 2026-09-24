@@ -38,6 +38,7 @@ from .messages import (
 )
 from .notify import Notifier, build_notifier, is_real
 from .search import (
+    Backoff,
     RateLimited,
     Route,
     RouteResult,
@@ -290,7 +291,10 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
     config: Config = obj["config"]
     zones = _select_zones(config, kind, zone)
     searcher = mock_searcher() if mock else google_searcher(
-        config.currency, config.country, config.language, config.search.parallel_requests
+        config.currency, config.country, config.language,
+        parallel_requests=config.search.parallel_requests,
+        requests_per_second=config.search.requests_per_second,
+        backoff=Backoff(config.search.rate_limit_wait_seconds, config.search.rate_limit_max_waits),
     )
     notifier = _notifier(config, dry_run)
     report = run_zones(config, zones, obj["history"], searcher, notifier, delay=0 if mock else delay)

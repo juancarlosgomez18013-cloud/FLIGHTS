@@ -103,6 +103,29 @@ class RateLimited(RuntimeError):
     partial: list = []
 
 
+class Backoff:
+    """Tras un bloqueo de Google (HTTP 429), espera y reintenta; se rinde tras `max_waits` esperas en la corrida.
+
+    Google levanta el bloqueo en uno o dos minutos si se deja de insistir. Esperar una vez suele
+    salvar la corrida completa; si el bloqueo persiste, se aborta para no empeorarlo.
+    """
+
+    def __init__(self, seconds: float = 90.0, max_waits: int = 3, sleep: Callable[[float], None] = time.sleep):
+        self.seconds, self.max_waits, self.sleep = seconds, max_waits, sleep
+        self.waits_done = 0
+
+    def run(self, call: Callable[[], object]):
+        while True:
+            try:
+                return call()
+            except RateLimited as exc:
+                if self.waits_done >= self.max_waits or self.seconds <= 0:
+                    raise
+                self.waits_done += 1
+                logger.warning("%s. Espera %.0f s y reintenta (%d/%d).", exc, self.seconds, self.waits_done, self.max_waits)
+                self.sleep(self.seconds)
+
+
 def date_window(months_ahead: int, max_days_ahead: int, today: date | None = None) -> tuple[date, date]:
     """Fechas de ida: desde mañana hasta `months_ahead` meses (máx. `max_days_ahead` días)."""
     today = today or date.today()
@@ -111,16 +134,27 @@ def date_window(months_ahead: int, max_days_ahead: int, today: date | None = Non
     return start, today + timedelta(days=days)
 
 
-def google_searcher(currency: str, country: str, language: str, parallel_requests: int = 3) -> Searcher:
+def google_searcher(
+    currency: str,
+    country: str,
+    language: str,
+    parallel_requests: int = 3,
+    requests_per_second: int = 2,
+    backoff: Backoff | None = None,
+) -> Searcher:
     """Crea un buscador real contra Google Flights (calendario de precios de ida y vuelta).
 
-    `parallel_requests`: cuántos trozos de fechas se piden a la vez. Menos = más lento pero
-    menos riesgo de que Google bloquee (HTTP 429).
+    `parallel_requests`: cuántos trozos de fechas se piden a la vez.
+    `requests_per_second`: tope global de peticiones por segundo (fli trae 10; Google bloquea antes).
+    `backoff`: qué hacer ante un HTTP 429 (por defecto, esperar 90 s hasta 3 veces por corrida).
     """
 
     from fli.models import Airport, BagsFilter, DateSearchFilters, FlightSegment, PassengerInfo, TripType
     from fli.search import SearchDates
+    from fli.search.client import Client
     from fli.search.exceptions import SearchHTTPError
+
+    backoff = backoff or Backoff()
 
     try:
         from fli.search._concurrency import configure_concurrency
@@ -181,6 +215,16 @@ def google_searcher(currency: str, country: str, language: str, parallel_request
             return chunks
 
     client = RangeSearchDates()
+    # Cliente propio con un ritmo global más bajo que el de fli, compartido por todos los hilos.
+    client.client = Client(calls_per_second=max(1, int(requests_per_second)))
+
+    def call_google(filters) -> list:
+        try:
+            return client.search(filters, currency=currency, language=language, country=country) or []
+        except SearchHTTPError as exc:
+            if exc.status_code in (429, 403):
+                raise RateLimited(f"Google bloqueó la búsqueda (HTTP {exc.status_code})") from exc
+            raise
 
     def search(route: Route, from_date: date, to_date: date) -> RouteResult:
         lo, hi = route.nights
@@ -204,15 +248,10 @@ def google_searcher(currency: str, country: str, language: str, parallel_request
             min_nights=lo,
             max_nights=hi,
         )
-        try:
-            prices = client.search(filters, currency=currency, language=language, country=country)
-        except SearchHTTPError as exc:
-            if exc.status_code in (429, 403):
-                raise RateLimited(f"Google bloqueó la búsqueda (HTTP {exc.status_code})") from exc
-            raise
+        prices = backoff.run(lambda: call_google(filters))
         fares: Fares = {}
         seen_currency = currency
-        for p in prices or []:
+        for p in prices:
             if len(p.date) != 2 or not p.price or p.price <= 0:
                 continue
             out, back = p.date[0].date().isoformat(), p.date[1].date().isoformat()

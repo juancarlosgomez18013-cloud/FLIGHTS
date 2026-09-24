@@ -82,11 +82,14 @@ summary:
   send_when_empty: true         # si no hay nada barato, igual manda un mensaje corto
 
 search:
-  request_delay_seconds: 2.0    # pausa entre búsquedas para que Google no bloquee
+  request_delay_seconds: 2.0    # pausa entre búsquedas (rutas) para que Google no bloquee
   max_days_ahead: 300
   both_bag_prices: true         # consultar también el precio con la otra maleta
                                 # (solo alrededor de cada oferta; pocas peticiones extra)
   parallel_requests: 3          # peticiones a Google a la vez dentro de una búsqueda
+  requests_per_second: 2        # tope global de peticiones por segundo (Google bloquea si se le insiste)
+  rate_limit_wait_seconds: 90   # si Google bloquea (HTTP 429), esperar esto y reintentar…
+  rate_limit_max_waits: 3       # …hasta tantas veces por corrida; después se guarda lo logrado y se para
 
 # Conexiones desde casa hacia los aeropuertos internacionales. Se buscan
 # ida y vuelta con las fechas del viaje y se suman para dar el total.

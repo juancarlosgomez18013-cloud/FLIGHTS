@@ -170,13 +170,16 @@ config.yaml ─▶ buscar ─▶ search.py (Google Flights: precio de cada ida y
 
 Google entrega como máximo unas 200 combinaciones por petición, así que cada ruta se pide en
 trozos (45 días de ida para 2-5 noches, 20 días para 6-14) con hasta `parallel_requests`
-peticiones a la vez y una pausa de `request_delay_seconds` entre rutas.
+peticiones a la vez, un tope global de `requests_per_second` y una pausa de
+`request_delay_seconds` entre rutas. Si Google responde HTTP 429, la corrida espera
+`rate_limit_wait_seconds` y reintenta (hasta `rate_limit_max_waits` veces) antes de rendirse.
+La corrida internacional completa tarda unos 15 a 20 minutos; la nacional, unos 5.
 
 ## Problemas conocidos
 
-- **Google puede bloquear** (HTTP 429/403). La búsqueda se detiene sola y guarda lo alcanzado.
-  Si pasa seguido, sube `request_delay_seconds`, baja `parallel_requests`, acorta el rango de
-  noches o quita destinos.
+- **Google puede bloquear** (HTTP 429/403). La búsqueda espera y reintenta; si el bloqueo sigue,
+  se detiene sola y guarda lo alcanzado. Si pasa seguido, baja `requests_per_second` o
+  `parallel_requests`, sube `request_delay_seconds`, acorta el rango de noches o quita destinos.
 - **No todas las aerolíneas salen en Google Flights.** Avianca, LATAM, Wingo y JetSmart sí. Satena
   y Clic a veces no (por eso Apartadó u Olaya Herrera pueden salir sin precios).
 - **Precio por persona, sin silla.** El precio "con maleta" es el que Google calcula sumando la

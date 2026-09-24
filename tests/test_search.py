@@ -4,6 +4,7 @@ import pytest
 
 from cheapflights.search import (
     MAX_COMBOS_PER_REQUEST,
+    Backoff,
     RateLimited,
     Route,
     RouteResult,
@@ -58,3 +59,26 @@ def test_search_routes_continues_on_error_but_stops_on_rate_limit():
         search_routes(jobs, searcher, on_error=lambda key, e: errors.append(key))
     assert calls == ["CTG", "BAQ", "SMR"] and errors == ["BGA-BAQ/2-5n/0m"]
     assert [r.route.destination for r in exc.value.partial] == ["CTG"]
+
+
+def test_backoff_waits_then_retries_and_finally_gives_up():
+    slept, attempts = [], []
+
+    def flaky(fail_times):
+        def call():
+            attempts.append(1)
+            if len(attempts) <= fail_times:
+                raise RateLimited("HTTP 429")
+            return "ok"
+        return call
+
+    b = Backoff(seconds=90, max_waits=3, sleep=slept.append)
+    assert b.run(flaky(2)) == "ok" and slept == [90, 90] and b.waits_done == 2
+    attempts.clear()
+    with pytest.raises(RateLimited):
+        b.run(flaky(5))  # solo queda 1 espera en la corrida: se rinde en el segundo bloqueo
+    assert slept == [90, 90, 90] and len(attempts) == 2
+    attempts.clear()
+    with pytest.raises(RateLimited):
+        Backoff(seconds=0, sleep=slept.append).run(flaky(1))  # sin espera configurada: no reintenta
+    assert len(slept) == 3 and len(attempts) == 1
