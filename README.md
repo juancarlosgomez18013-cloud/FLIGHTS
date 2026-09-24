@@ -155,14 +155,16 @@ costar salir por esas fechas (la mediana de esos precios, a ±30 días de la ofe
 
 | Qué | Cuándo |
 |---|---|
-| Búsqueda (goteo) | Cada hora, al minuto 23: solo las rutas que ya tocan, máximo 10 |
+| Búsqueda (goteo) | Todo el día: una tanda cada ~hora con las rutas que ya tocan, máximo 10 |
 | Cada ruta de Colombia | Se vuelve a buscar cada 6 horas |
 | Cada ruta internacional | Se vuelve a buscar cada 24 horas |
 | Resumen del día | 7:30 a. m. |
 | Plan de viajes | Lunes 8:07 a. m. |
 
 El goteo reparte las búsquedas en el día en vez de hacer pocas corridas grandes: así no hay
-ráfagas, que es lo que hace que Google frene. Si Google bloquea, la siguiente hora sigue con lo
+ráfagas, que es lo que hace que Google frene. Cada tarea de GitHub dura unas 4 horas y hace 5
+tandas separadas por 50 minutos, porque el reloj de GitHub se atrasa hasta 3 horas; el horario
+de cada hora solo deja lista la siguiente tarea para que arranque apenas termine la anterior. Si Google bloquea, la siguiente hora sigue con lo
 pendiente; solo te llega un "⚠️" si pasan 12 horas sin conseguir ningún precio.
 
 Las búsquedas completas (todas las rutas de una vez) se pueden lanzar a mano: **Actions** →
