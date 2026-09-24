@@ -34,6 +34,7 @@ class SearchSettings:
     refresh_hours_domestic: float = 6.0  # cada cuánto se vuelve a buscar una ruta de Colombia
     refresh_hours_international: float = 24.0  # y una internacional
     max_routes_per_run: int = 10  # tope de rutas por corrida (sin ráfagas)
+    retry_empty_hours: float = 3.0  # una ruta que nunca ha dado precio se reintenta cada tanto
     alert_after_hours_without_prices: float = 12.0  # avisar ⚠️ solo si pasan tantas horas sin precios
 
     def refresh_hours(self, kind: str) -> float:

@@ -114,6 +114,8 @@ search:
   refresh_hours_domestic: 6     # cada cuántas horas se vuelve a buscar una ruta de Colombia
   refresh_hours_international: 24  # y una internacional
   max_routes_per_run: 10        # máximo de rutas por corrida (sin ráfagas)
+  retry_empty_hours: 3          # una ruta que nunca ha dado precio se reintenta cada 3 horas
+                                #    (una búsqueda vacía no cuenta como "ya buscada")
   alert_after_hours_without_prices: 12  # te aviso ⚠️ solo si pasan tantas horas sin ningún precio
 
 # Conexiones desde casa hacia los aeropuertos internacionales. Se buscan
