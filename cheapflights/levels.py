@@ -1,15 +1,18 @@
 """Clasificación de precios: 🔥 súper barato, 👍 barato o nada.
 
-Cada "viaje" es una combinación (fecha de ida, fecha de vuelta) dentro del rango de noches
-de la zona. "Precio normal" de una ruta = mediana de sus viajes próximos.
+Cada "viaje" es una combinación (fecha de ida, fecha de vuelta) dentro del rango de noches de la
+zona; en solo ida, la vuelta es el mismo día. Para no inflar las ofertas, primero se toma el viaje
+más barato que sale cada día y todo se compara contra eso.
 
-Etapa 1 (poco historial): compara con los demás viajes de la misma ruta.
-  👍 si está X % bajo el precio normal.
-  🔥 si está Y % bajo el precio normal Y Z % bajo el 25 % de viajes más baratos
-     (así la tarifa promo que aparece en muchas fechas no cuenta como 🔥).
-Etapa 2 (historial suficiente): compara con lo que la ruta ha costado en el tiempo.
-  🔥 si está en el P % más barato de lo visto y al menos D % bajo lo que suele costar.
-  👍 igual con umbrales suaves, o si sigue barato frente a sus otros viajes.
+"Precio normal" = mediana de esos precios por día de salida, en las fechas cercanas a la oferta
+(±30 días), que es lo que suele costar viajar por esas fechas.
+
+Etapa 1 (poco historial):
+  🔥 si está al menos X % bajo el precio normal Y ese precio aparece en muy pocas fechas
+     (la tarifa promo que se repite en muchos días no es 🔥, es 👍).
+  👍 si está al menos Y % bajo el precio normal.
+Etapa 2 (historial suficiente): además se compara con lo que la ruta ha costado en el tiempo.
+  🔥 si está en el P % más barato de lo visto, al menos D % bajo lo que suele costar y es raro.
 En ambas etapas, los precios fijos opcionales de config.yaml también cuentan.
 """
 
@@ -45,6 +48,7 @@ class Verdict:
     cheap_limit: float  # hasta qué precio un viaje cuenta como barato
     percentile: float | None = None
     usual: float | None = None
+    share: float = 0.0  # % de fechas de salida con este mismo precio (±1 %): bajo = oferta rara
     tracked_days: float | None = None
     new_low: bool = False
     same_price_trips: tuple[tuple[str, str], ...] = ()  # otros viajes al mismo precio (±1 %)
@@ -116,15 +120,19 @@ def _history_span(runs: list[dict[str, Any]]) -> tuple[int, float]:
     return len(priced), (last - first).total_seconds() / 86400
 
 
-def _quantile(values: list[float], q: float) -> float:
-    ordered = sorted(values)
-    return ordered[int(q * (len(ordered) - 1))]
+def cheapest_per_day(fares: Fares) -> dict[str, float]:
+    """El viaje más barato que sale cada día (sea cual sea la vuelta)."""
+    days: dict[str, float] = {}
+    for (out, _), price in fares.items():
+        if out not in days or price < days[out]:
+            days[out] = price
+    return days
 
 
-def _near_normal(upcoming: Fares, out: str, fallback: float) -> float:
+def _near_normal(per_day: dict[str, float], out: str, fallback: float) -> float:
     d = date.fromisoformat(out)
     lo, hi = (d - timedelta(days=NEAR_DAYS)).isoformat(), (d + timedelta(days=NEAR_DAYS)).isoformat()
-    near = [p for (o, _), p in upcoming.items() if lo <= o <= hi]
+    near = [p for day, p in per_day.items() if lo <= day <= hi]
     return statistics.median(near) if len(near) >= 10 else fallback
 
 
@@ -147,19 +155,20 @@ def classify(
     if not upcoming:
         return None
     (out, back), price = min(upcoming.items(), key=lambda kv: (kv[1], kv[0]))
-    values = list(upcoming.values())
-    normal = statistics.median(values)
-    low_quarter = _quantile(values, 0.25)
+    per_day = cheapest_per_day(upcoming)
+    day_prices = list(per_day.values())
+    normal = statistics.median(day_prices)
+    reference = _near_normal(per_day, out, normal)  # lo que suele costar salir por esas fechas
+    share = 100 * sum(1 for p in day_prices if p <= price * 1.01) / len(day_prices)
+    rare = share <= levels.super_max_share
+    discount_now = 100 * (1 - price / reference) if reference else 0.0
     # Los precios fijos de config.yaml son de ida y vuelta: no aplican a un tramo solo ida.
     fixed_super, fixed_cheap = (None, None) if route.one_way else zone.fixed_prices(route.destination)
 
-    cheap_limit = normal * (1 - levels.cheap_below_normal / 100)
+    cheap_limit = reference * (1 - levels.cheap_below_normal / 100)
     if fixed_cheap is not None:
         cheap_limit = max(cheap_limit, fixed_cheap)
-    relative_super = price <= min(
-        normal * (1 - levels.super_below_normal / 100),
-        low_quarter * (1 - levels.super_below_cheap_dates / 100),
-    )
+    relative_super = discount_now >= levels.super_below_normal and rare
     is_fixed_super = fixed_super is not None and price <= fixed_super
     is_cheap = price <= cheap_limit
 
@@ -175,7 +184,7 @@ def classify(
         percentile = midrank_percentile(mins, price)
         usual = statistics.median(mins)
         discount = 100 * (1 - price / usual) if usual else 0.0
-        if (percentile <= levels.super_percentile and discount >= levels.super_min_discount) or is_fixed_super:
+        if (percentile <= levels.super_percentile and discount >= levels.super_min_discount and rare) or is_fixed_super:
             level = SUPER
         elif (percentile <= levels.cheap_percentile and discount >= levels.cheap_min_discount) or is_cheap:
             level = CHEAP
@@ -197,7 +206,7 @@ def classify(
         back=back,
         currency=currency,
         normal=normal,
-        near_normal=_near_normal(upcoming, out, normal),
+        near_normal=reference,
         level=level,
         stage=stage,
         cheap_limit=cheap_limit,
@@ -205,6 +214,7 @@ def classify(
         usual=usual,
         tracked_days=span_days if count >= 2 else None,
         new_low=new_low,
+        share=share,
         same_price_trips=same,
         cheap_trips=others,
     )

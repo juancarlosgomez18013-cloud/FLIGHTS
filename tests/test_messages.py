@@ -12,6 +12,7 @@ from cheapflights.messages import (
     fmt_date_short,
     fmt_price,
     fmt_trip_long,
+    fmt_range,
     fmt_trip_short,
     format_alerts,
     format_alerts_packed,
@@ -81,6 +82,11 @@ def test_formats_are_spanish_and_readable():
     assert fmt_trip_short("2026-12-30", "2027-01-03", TODAY) == "mié 30 dic 2026 → dom 3 ene 2027"
     assert fmt_trip_long("2026-10-24", "2026-10-28", TODAY) == "sábado 24 de octubre → miércoles 28 de octubre · 4 noches"
     assert fmt_trip_long("2027-02-24", "2027-02-25", TODAY) == "miércoles 24 de febrero → jueves 25 de febrero de 2027 · 1 noche"
+    assert fmt_range("2026-11-01", "2026-11-07", TODAY) == "1–7 nov"
+    assert fmt_range("2026-11-28", "2026-12-02", TODAY) == "28 nov–2 dic"
+    assert fmt_range("2026-12-30", "2027-01-03", TODAY) == "30 dic 2026–3 ene 2027"
+    assert fmt_range("2027-02-10", "2027-02-15", TODAY) == "10–15 feb 2027"
+    assert fmt_range("2026-10-14", "2026-10-14", TODAY) == "14 oct"
 
 
 def test_holiday_text():
@@ -92,7 +98,7 @@ def test_holiday_text():
 
 def _super_domestic(config):
     zone = config.zone("Costa Caribe")
-    v = classify(zone.route("BGA", "BAQ"), fares([98_958, 99_000] + [300_000] * 20 + [310_000] * 20), "COP", zone, LEVELS, [], TODAY)
+    v = classify(zone.route("BGA", "BAQ"), fares([300_000] * 20 + [98_958] + [310_000] * 40), "COP", zone, LEVELS, [], TODAY)
     assert v.level == SUPER and v.bags == 0
     return v
 
@@ -101,11 +107,11 @@ def _super_international(config, history, other_bag=True):
     zone = config.zone("Perú, Ecuador, Bolivia y Venezuela")
     r = zone.route("BOG", "LIM")
     # la conexión sale de casa: un viaje por fecha de ida con 6 noches, igual que la oferta
-    history.record(RouteResult(config.feeder_route("BOG", 1), fares([64_330] * 10, nights=(6, 16))), NOW)
+    history.record(RouteResult(config.feeder_route("BOG", 1), fares([64_330] * 40, nights=(6, 16))), NOW)
     if other_bag:
-        history.record(RouteResult(r.other_bags, {(_iso(2), _iso(8)): 250_000.0}), NOW, partial=True)
-    v = classify(r, fares([600_000, 320_000] + [650_000] * 30, nights=(6, 14)), "COP", zone, LEVELS, [], TODAY)
-    assert v.level == SUPER and v.bags == 1 and (v.out, v.back) == (_iso(2), _iso(8))
+        history.record(RouteResult(r.other_bags, {(_iso(21), _iso(27)): 250_000.0}), NOW, partial=True)
+    v = classify(r, fares([650_000] * 20 + [320_000] + [650_000] * 40, nights=(6, 14)), "COP", zone, LEVELS, [], TODAY)
+    assert v.level == SUPER and v.bags == 1 and (v.out, v.back) == (_iso(21), _iso(27))
     return enrich(v, history, config, TODAY)
 
 
@@ -113,16 +119,15 @@ def test_one_or_two_alerts_use_detailed_cards(config, history):
     msgs = format_alerts(config, [_super_domestic(config), _super_international(config, history)], TODAY)
     assert len(msgs) == 1
     text = msgs[0]
-    assert "🔥 *SÚPER BARATO* · 🏖️ Costa Caribe" in text
-    assert "*Bucaramanga ⇄ Barranquilla*" in text and "ida y vuelta · sin maleta" in text
-    assert "*Bogotá ⇄ Lima, Perú*" in text and "ida y vuelta · con maleta facturada" in text
-    assert "🎒 Sin maleta: $250.000" in text  # el otro precio del mismo viaje
-    assert "➕ Bucaramanga ⇄ Bogotá: $64.330" in text and "Total desde Bucaramanga: $384.330" in text
-    assert "🗓️" in text and "2 noches" in text and "6 noches" in text
-    assert "suele costar unos $" in text and "ahorras" in text and "Ver en Google Flights" in text
-    assert "Mismo precio saliendo en 1 fecha más" in text
-    assert "~" not in text and "Precio por persona" in text and "SOLO IDA" not in text
-    assert "through" in text  # el enlace abre la búsqueda de ida y vuelta
+    assert text.count("🔥 *SÚPER BARATO*") == 2
+    assert "🏖️ *Barranquilla · $98.958* ida y vuelta" in text and "🎒 Sin maleta" in text
+    assert "🇵🇪 *Lima, Perú · $320.000* ida y vuelta" in text
+    assert "🧳 Con maleta · sin maleta: $250.000" in text  # el otro precio del mismo viaje
+    assert "✈️ Sale de Bogotá · Bucaramanga ⇄ Bogotá: $64.330" in text
+    assert "🧾 *Total desde Bucaramanga: $384.330*" in text
+    assert "Normalmente $" in text and "ahorras" in text and "👉 Ver vuelo" in text
+    assert "📅" in text and "2 noches" in text and "6 noches" in text and "through" in text
+    assert "suele costar" not in text and "Mismo precio" not in text  # lo que confundía ya no sale
     assert_telegram_ok(text)
 
 
@@ -132,9 +137,11 @@ def test_three_or_more_alerts_become_a_compact_list(config, history):
     many.append(classify(zone.route("BGA", "BOG"), fares([60_000] + [124_000] * 40), "COP", zone, LEVELS, [], TODAY))
     packed = format_alerts_packed(config, many, TODAY)
     text = packed[0][0]
-    assert text.startswith("🔥 *3 viajes súper baratos*")
+    assert text.startswith("🔥 *3 vuelos súper baratos*")
     assert "🇵🇪" in text  # bandera del país, no la de la zona
-    assert "sin maleta" in text and "con maleta facturada · sin maleta: $250.000" in text
+    assert "total desde Bucaramanga unos $384.000" in text
+    lines = [l for l in text.split("\n") if l.startswith("• ")]
+    assert len(lines) == 3 and all("$" in l and " · " in l for l in lines)  # una línea por vuelo
     assert sorted(v.destination for _, vs in packed for v in vs) == ["BAQ", "BOG", "LIM"]
     assert_telegram_ok(text)
 
@@ -147,7 +154,7 @@ def test_estimated_feeder_is_labelled(config, history):
     v = enrich(v, history, config, TODAY)
     text = format_alerts(config, [v], TODAY)[0]
     assert "(aprox.)" in text and "Total desde Bucaramanga: unos $384.000" in text
-    assert "Sin maleta" not in text  # no se buscó la otra maleta: no se inventa
+    assert "sin maleta:" not in text  # no se buscó la otra maleta: no se inventa
 
 
 def test_puente_shows_in_alert(config):
@@ -155,8 +162,8 @@ def test_puente_shows_in_alert(config):
     f = {("2026-10-30", "2026-11-02"): 150_000.0} | {(d, b): 400_000.0 for d, b in fares([1] * 40)}
     v = classify(zone.route("BGA", "CTG"), f, "COP", zone, LEVELS, [], TODAY)
     text = format_alerts(config, [v], TODAY)[0]
-    assert "🎉 Puente festivo: lun 2 nov (Todos los Santos)" in text
-    assert "viernes 30 de octubre → lunes 2 de noviembre · 3 noches" in text
+    assert "🎉 Puente: lun 2 nov, Todos los Santos" in text
+    assert "📅 vie 30 oct → lun 2 nov · 3 noches" in text
 
 
 def test_summary_sections_and_telegram_html(config, history):
@@ -167,11 +174,12 @@ def test_summary_sections_and_telegram_html(config, history):
     intl = _super_international(config, history)
     msgs = format_summary(config, {"domestic": [dom, cheap], "international": [intl]}, TODAY)
     text = "\n\n".join(msgs)
-    assert "☀️ *Viajes baratos de hoy*" in text
+    assert "☀️ *Vuelos baratos hoy*" in text
+    assert "Ida y vuelta, por persona. Colombia sin maleta; internacional con maleta." in text
     assert "🇨🇴 *COLOMBIA* · desde Bucaramanga" in text
     assert "✈️ *INTERNACIONAL* · desde Bogotá o Medellín" in text
-    assert text.index("🔥 *Súper barato*") < text.index("👍 *Barato*")
-    assert "Leticia" in text and "Lima, Perú" in text and "sale de Bogotá" in text and "con la conexión desde Bucaramanga" in text
+    assert text.index("🔥 *Súper baratos*") < text.index("👍 *Baratos*")
+    assert "Leticia" in text and "Lima, Perú" in text and "sale de Bogotá · total desde Bucaramanga" in text
     for m in msgs:
         assert_telegram_ok(m)
 
@@ -181,6 +189,13 @@ def test_summary_empty_and_stale(config):
     text = msgs[0]
     assert "Aún no hay datos" in text
     assert "Hace 5 días que no llegan precios nuevos" in text
+
+
+def test_summary_nothing_cheap(config):
+    zone = config.zone("Eje Cafetero")
+    flat = classify(zone.route("BGA", "PEI"), fares([300_000] * 40), "COP", zone, LEVELS, [], TODAY)
+    text = format_summary(config, {"domestic": [flat]}, TODAY)[0]
+    assert "Nada barato hoy" in text
 
 
 def test_summary_can_skip_when_empty(config):
@@ -194,20 +209,20 @@ def test_summary_limits_items_per_section(config):
             for i, d in enumerate(["CTG", "BAQ", "SMR", "RCH", "VUP", "MTR"] * 2)]
     cfg = replace(config, summary=replace(config.summary, max_per_section=3))
     text = format_summary(cfg, {"domestic": many}, TODAY)[0]
-    assert "…y 9 destinos más" in text
+    assert "…y 9 más" in text
 
 
 def test_long_summary_never_splits_a_destination(config):
     zone = config.zone("Europa")
-    items = [classify(zone.route("BOG", d), fares([900_000 + i] + [2_000_000] * 30, nights=(6, 14)), "COP", zone, LEVELS, [], TODAY)
-             for i, d in enumerate(zone.destinations * 4)]
-    cfg = replace(config, summary=replace(config.summary, max_per_section=40))
+    items = [classify(zone.route("BOG", d), fares([900_000 + i] + [2_000_000] * 30), "COP", zone, LEVELS, [], TODAY)
+             for i, d in enumerate(zone.destinations * 12)]
+    cfg = replace(config, summary=replace(config.summary, max_per_section=200))
     msgs = format_summary(cfg, {"international": items}, TODAY)
     assert len(msgs) >= 2
     for m in msgs[1:]:
         first = m.split("\n")[0]
         assert first.startswith("✈️ *INTERNACIONAL*") and "(sigue)" in first
-        assert m.split("\n")[1] in ("🔥 *Súper barato*", "👍 *Barato*")
+        assert m.split("\n")[1] in ("🔥 *Súper baratos*", "👍 *Baratos*")
     for m in msgs:
         assert_telegram_ok(m)
 
@@ -225,14 +240,14 @@ def test_plan_and_best_month(config):
     zone = config.zone("Bogotá")
     v = classify(zone.route("BGA", "BOG"), f, "COP", zone, LEVELS, [], TODAY)
     text = format_plan(config, {"domestic": [(v, ("noviembre", 15))], "international": []}, TODAY)[0]
-    assert "🏙️ *Bogotá*: $90.000 · vie 2 → dom 4 oct (2 noches, sin maleta)" in text  # no repite "Bogotá Bogotá"
-    assert "Más fechas baratas en noviembre (15 días de salida)" in text
+    assert "🏙️ *[Bogotá](" in text and "$90.000 · 2–4 oct" in text and "Bogotá: *" not in text  # no repite "Bogotá: Bogotá"
+    assert "mejor mes para ir: noviembre" in text
     assert_telegram_ok(text)
 
 
 def test_test_message(config):
     text = format_test(config, _super_domestic(config), TODAY)[0]
-    assert "Prueba" in text and "SÚPER BARATO" in text and "apenas lo encuentro" in text and "ida y vuelta" in text
+    assert "Prueba" in text and "SÚPER BARATO" in text and "apenas aparece" in text and "ida y vuelta" in text
     assert_telegram_ok(text)
 
 
@@ -261,23 +276,22 @@ def test_one_way_alert_and_link(config):
     v = classify(r, {(d, d): p for (d, _), p in fares([55_000] + [180_000] * 40).items()}, "COP", zone, LEVELS, [], TODAY)
     assert v.one_way and v.level == SUPER and v.alert_key == "solo-ida:CTG-BGA" and v.out == v.back
     text = format_alerts(config, [v], TODAY)[0]
-    assert "🔥 *SÚPER BARATO · SOLO IDA* · 🏖️ Costa Caribe" in text
-    assert "*Cartagena → Bucaramanga*" in text and "*$55.000* solo ida · sin maleta" in text
+    assert "🔥 *SÚPER BARATO · SOLO IDA*" in text
+    assert "🎫 *Cartagena → Bucaramanga · $55.000* solo ida" in text and "🎒 Sin maleta" in text
     assert "noches" not in text and "one+way" in text
     assert_telegram_ok(text)
 
 
 def test_split_price_line_and_summary_one_way_section(config):
-    zone = config.zone("Costa Caribe")
-    rt = classify(zone.route("BGA", "BAQ"), fares([98_958, 99_000] + [300_000] * 40), "COP", zone, LEVELS, [], TODAY)
-    rt = replace(rt, split_price=80_000.0)
+    rt = replace(_super_domestic(config), split_price=80_000.0)
     text = format_alerts(config, [rt], TODAY)[0]
-    assert "✂️ Armado con dos tramos solo ida: $80.000 (ahorras $18.958)" in text
+    assert "✂️ En dos tramos solo ida: $80.000" in text
+    zone = config.zone("Costa Caribe")
     ow = classify(route("BGA", "CTG", (0, 0)), {(d, d): p for (d, _), p in fares([50_000] + [180_000] * 40).items()}, "COP", zone, LEVELS, [], TODAY)
     msgs = format_summary(config, {"domestic": [rt, ow]}, TODAY)
     text = "\n".join(msgs)
-    assert text.index("🔥 *Súper barato*") < text.index("🎫 *Solo ida*")
-    assert "• 🔥 🏖️ *[Bucaramanga → Cartagena]" in text and "solo ida · sin maleta" in text
-    assert "armado con dos tramos solo ida: $80.000" in text
+    assert text.index("🔥 *Súper baratos*") < text.index("🎫 *Solo ida*")
+    assert "• 🔥 *[Bucaramanga → Cartagena](" in text and "$50.000 · 24 sep" in text
+    assert "en dos tramos solo ida: $80.000" in text
     for m in msgs:
         assert_telegram_ok(m)

@@ -20,20 +20,19 @@ los avisos llegan sin sonido.
 Ejemplo de aviso:
 
 ```
-🔥 SÚPER BARATO · 🌴 Islas del Caribe
-Bogotá ⇄ Aruba
-💰 $750.000 ida y vuelta · con maleta facturada
-🎒 Sin maleta: $500.000
-🗓️ jueves 25 de febrero → miércoles 3 de marzo de 2027 · 6 noches
-➕ Bucaramanga ⇄ Bogotá: $150.000 (mié 24 feb → jue 4 mar 2027)
-🧾 Total desde Bucaramanga: $900.000
-📊 Cerca de esa fecha suele costar unos $1.350.000 (ahorras 44 %)
-📅 Mismo precio saliendo en 3 fechas más: jue 4 mar 2027, jue 11 mar 2027, jue 18 mar 2027
-👉 Ver en Google Flights
+🔥 SÚPER BARATO
+🏖️ Cartagena · $170.000 ida y vuelta
+Normalmente $320.000 · ahorras 47 %
+
+📅 sáb 31 oct → mar 3 nov · 3 noches
+🎉 Puente: lun 2 nov, Todos los Santos
+🎒 Sin maleta · con maleta: $290.000
+👉 Ver vuelo
 ```
 
-Si hay 3 o más ofertas a la vez, llegan juntas en una lista corta. Si el viaje incluye un festivo
-de Colombia, el aviso lo dice: `🎉 Puente festivo: lun 2 nov (Todos los Santos)`.
+En los internacionales se agrega de dónde sale y el total sumando la conexión desde
+Bucaramanga. Si hay 3 o más ofertas a la vez, llegan juntas en una lista corta, una línea por
+vuelo: `🏖️ Cartagena $170.000 · 31 oct–3 nov 🎉 · −47 %`.
 
 ## Configurar Telegram (5 minutos)
 
@@ -114,19 +113,23 @@ comentado en español.
 - **Puentes.** Los festivos de Colombia se calculan solos (incluida la Ley Emiliani y la Semana
   Santa) y el aviso marca los viajes que caen en uno.
 
-## Cómo decide qué es barato
+## Cómo decide qué es barato (modo muy estricto)
 
-Cada ruta se compara con **sus propios viajes** (todas las combinaciones de ida y vuelta), así
-sirve igual para Bogotá ($150.000) que para Europa ($4.000.000). "Precio normal" = lo que cuesta
-la mayoría de sus viajes.
+Para cada ruta se toma el viaje más barato que sale cada día. "Normalmente" es lo que suele
+costar salir por esas fechas (la mediana de esos precios, a ±30 días de la oferta).
 
-- 👍 **Barato:** 20 % o más bajo el precio normal.
-- 🔥 **Súper barato:** 25 % bajo lo normal **y** 15 % bajo los viajes más baratos de siempre. Así la
-  tarifa promo que aparece en muchas fechas cuenta como 👍 y no llena el celular de 🔥.
-- **Con el tiempo (automático):** cuando una ruta lleva 14 días y 20 búsquedas, también compara con
-  lo que ha costado en esas semanas. 🔥 si está en el 10 % más barato de lo visto.
-- **Tus precios (opcional):** en `config.yaml` puedes poner, por ciudad, a partir de qué precio
-  quieres 🔥 o 👍. Ej.: `CTG: {ciudad: Cartagena, super_barato: 250000, barato: 320000}`.
+- 🔥 **Súper barato:** al menos **45 %** bajo lo normal **y** ese precio aparece en máximo el
+  **3 %** de las fechas. Solo gangas de verdad: promos fuertes o errores de tarifa. Pueden pasar
+  días sin ningún 🔥; es lo esperado.
+- 👍 **Barato:** al menos 20 % bajo lo normal. Incluye la tarifa promo que se repite en muchas
+  fechas. Solo sale en el resumen diario, no te despierta el celular.
+- **Con el tiempo (automático):** cuando una ruta lleva 14 días y 20 búsquedas, además compara con
+  lo que ha costado en esas semanas. 🔥 si está en el 10 % más barato de lo visto, al menos 20 %
+  bajo lo que suele costar y el precio es raro.
+- **Más o menos estricto:** en `config.yaml`, `super_below_normal` (45) y `super_max_share` (3).
+  Para recibir más 🔥, prueba 35 y 5.
+- **Tus precios (opcional):** por ciudad, a partir de qué precio quieres 🔥 o 👍 (ida y vuelta).
+  Ej.: `CTG: {ciudad: Cartagena, super_barato: 180000, barato: 230000}`.
 - **Sin repetir:** cada oferta se avisa una vez. Vuelve a avisar si baja otro 5 %, o si desaparece
   y después vuelve.
 

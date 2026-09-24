@@ -68,7 +68,7 @@ def test_super_alerts_once_then_again_only_if_cheaper_or_back(config, history, m
         "BAQ", "BOG", "CTG", "solo-ida:BGA-BAQ", "solo-ida:BGA-BOG", "solo-ida:BGA-CTG",
     ]
     assert len(n.sent) == 1 and n.sent[0].startswith("🔥 *6 vuelos súper baratos*")
-    assert "con maleta facturada: $90.000" in n.sent[0]  # el otro precio del mismo viaje (60.000 × 1,5)
+    assert history.fares("BGA-BOG/2-5n/1m")  # se consultó la otra maleta alrededor de la oferta
 
     r = run_zones(config, _zones(config), history, _searcher(DEALS), n, delay=0, now=NOW + timedelta(hours=1))
     assert r.alerted == [] and r.already_alerted == 6 and len(n.sent) == 1
@@ -179,4 +179,4 @@ def test_two_one_ways_cheaper_than_round_trip_shows_in_alert(config, history):
 
     n = RealNotifier()
     run_zones(config, [config.zone("Bogotá")], history, search, n, delay=0, now=NOW)
-    assert "✂️ Armado con dos tramos solo ida: $45.000" in n.sent[0] or "armado con dos tramos solo ida: $45.000" in n.sent[0]
+    assert "dos tramos solo ida: $45.000" in n.sent[0]

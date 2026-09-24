@@ -17,14 +17,31 @@ def _iso(days: int) -> str:
 
 
 def test_promo_on_many_dates_is_cheap_not_super():
-    # tarifa promo en 30 % de las fechas: es "lo barato de siempre", 👍 pero no 🔥
-    v = classify(route("BGA", "MDE"), fares([86_000] * 30 + [220_000] * 70), "COP", PLAIN, LEVELS, [], TODAY)
-    assert v.level == CHEAP and len(v.same_price_trips) == 29 and len(v.same_price_outs) == 29
+    # tarifa promo uno de cada tres días: es "lo barato de siempre", 👍 pero no 🔥
+    v = classify(route("BGA", "MDE"), fares([86_000, 220_000, 220_000] * 33), "COP", PLAIN, LEVELS, [], TODAY)
+    assert v.level == CHEAP and v.savings_percent > 45 and v.share > 30
 
 
 def test_rare_price_far_below_the_rest_is_super():
-    v = classify(R, fares([64_000] * 5 + [80_000] * 30 + [124_000] * 65), "COP", PLAIN, LEVELS, [], TODAY)
-    assert v.level == SUPER and v.stage == 1 and v.price == 64_000 and v.nights == 2
+    v = classify(R, fares([220_000] * 20 + [100_000] + [220_000] * 80), "COP", PLAIN, LEVELS, [], TODAY)
+    assert v.level == SUPER and v.stage == 1 and v.price == 100_000 and v.nights == 2 and v.share < 3
+
+
+def test_rare_but_not_deep_enough_is_only_cheap():
+    v = classify(R, fares([220_000] * 20 + [140_000] + [220_000] * 80), "COP", PLAIN, LEVELS, [], TODAY)
+    assert v.level == CHEAP and round(v.savings_percent) == 36  # 36 % es barato, no 🔥 en modo muy estricto
+
+
+def test_compares_with_cheapest_trip_per_day_not_all_combinations():
+    # cada día: una vuelta barata (200.000) y varias caras; la oferta de 150.000 es solo 25 % bajo lo normal
+    f = {}
+    for i in range(60):
+        out = TODAY + timedelta(days=1 + i)
+        for n, p in ((2, 200_000.0), (3, 500_000.0), (4, 600_000.0), (5, 700_000.0)):
+            f[(out.isoformat(), (out + timedelta(days=n)).isoformat())] = p
+    f[(_iso(20), _iso(22))] = 150_000.0
+    v = classify(R, f, "COP", PLAIN, LEVELS, [], TODAY)
+    assert v.near_normal == 200_000 and v.level == CHEAP
 
 
 def test_flat_route_is_nothing():
@@ -59,7 +76,7 @@ def test_stage2_needs_enough_history():
 
 def test_stage2_super_requires_rank_and_discount():
     past = runs([200_000 + i * 1000 for i in range(25)])
-    v = classify(R, fares([150_000, 300_000]), "COP", PLAIN, LEVELS, past, TODAY)
+    v = classify(R, fares([150_000] + [300_000] * 40), "COP", PLAIN, LEVELS, past, TODAY)
     assert v.stage == 2 and v.level == SUPER and v.new_low
     v = classify(R, fares([199_000, 200_000]), "COP", PLAIN, LEVELS, past, TODAY)
     assert v.level is None  # nuevo mínimo, pero apenas 1 % bajo lo que suele costar
@@ -116,9 +133,9 @@ def test_enrich_adds_feeder_and_other_bag_price(history, config):
     out, back = _iso(50), _iso(58)
     history.record(RouteResult(config.feeder_route("BOG", 1), {(_iso(49), _iso(59)): 150_000.0}), NOW)
     history.record(RouteResult(r.other_bags, {(out, back): 400_000.0}), NOW, partial=True)
-    v = classify(r, {(out, back): 500_000.0} | fares([900_000] * 30, nights=(6, 14)), "COP", zone, LEVELS, [], TODAY)
+    v = classify(r, {(out, back): 400_000.0} | fares([900_000] * 60, nights=(6, 14)), "COP", zone, LEVELS, [], TODAY)
     v = enrich(v, history, config, TODAY)
-    assert v.level == SUPER and v.feeder_price == 150_000 and v.total == 650_000
+    assert v.level == SUPER and v.feeder_price == 150_000 and v.total == 550_000
     assert (v.feeder_out, v.feeder_back, v.feeder_origin) == (_iso(49), _iso(59), "BGA")
     assert v.other_bag_price == 400_000
 
