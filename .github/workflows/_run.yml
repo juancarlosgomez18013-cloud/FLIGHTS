@@ -1,5 +1,7 @@
-# Workflow reutilizable: trae el historial de la rama `datos`, instala, corre el comando,
-# guarda el historial de vuelta en `datos` y, si algo falla, avisa por Telegram.
+# Workflow reutilizable: instala, y en cada vuelta trae el historial de la rama `datos`, corre el
+# comando y guarda el historial de vuelta en `datos`. Con `repeat` > 1 hace varias vueltas con una
+# pausa entre ellas (el goteo usa esto para no depender del reloj de GitHub, que se atrasa horas).
+# Si algo falla, avisa por Telegram.
 name: _run
 
 on:
@@ -9,6 +11,21 @@ on:
         description: "Argumentos para python -m cheapflights"
         required: true
         type: string
+      repeat:
+        description: "Cuántas vueltas hacer"
+        required: false
+        type: number
+        default: 1
+      pause_minutes:
+        description: "Minutos de pausa entre vueltas"
+        required: false
+        type: number
+        default: 0
+      timeout_minutes:
+        description: "Tope de tiempo de la tarea"
+        required: false
+        type: number
+        default: 75
     secrets:
       TELEGRAM_BOT_TOKEN: { required: false }
       TELEGRAM_CHAT_ID: { required: false }
@@ -22,8 +39,8 @@ on:
 permissions:
   contents: write
 
-# Las búsquedas no corren a la vez (todas reescriben el historial). Resumen, plan y prueba
-# van aparte: si compartieran la cola, GitHub cancelaría en silencio la que quede pendiente.
+# Las búsquedas no corren a la vez (todas reescriben el historial): si llega otra mientras una
+# corre, queda en espera y arranca apenas termine. Resumen, plan y prueba van aparte.
 concurrency:
   group: ${{ startsWith(inputs.command, 'buscar') && 'cheapflights-data' || format('cheapflights-{0}', github.run_id) }}
   cancel-in-progress: false
@@ -31,24 +48,11 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref_name }}
-
-      # El historial vive en la rama `datos` (un solo commit que se reescribe cada vez),
-      # así el repositorio no crece con cada búsqueda.
-      - name: Traer historial
-        run: |
-          mkdir -p data
-          if git fetch --depth=1 origin datos 2>/dev/null; then
-            git show FETCH_HEAD:history.json > data/history.json
-            echo "Historial traído de la rama datos ($(wc -c < data/history.json) bytes)"
-          else
-            echo "Aún no hay rama datos: se empieza con lo que haya en data/"
-          fi
-          sha256sum data/history.json > "$RUNNER_TEMP/historial.antes" 2>/dev/null || true
 
       - uses: actions/setup-python@v6
         with:
@@ -57,6 +61,8 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # El historial vive en la rama `datos` (un solo commit que se reescribe cada vez),
+      # así el repositorio no crece con cada búsqueda.
       - name: Ejecutar
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -68,32 +74,55 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_SERVER: ${{ secrets.NTFY_SERVER }}
           FLI_TIMEOUT: "45"
-        run: python -m cheapflights ${{ inputs.command }}
-
-      - name: Guardar historial
-        if: always()
+          COMANDO: ${{ inputs.command }}
+          VUELTAS: ${{ inputs.repeat }}
+          PAUSA: ${{ inputs.pause_minutes }}
         run: |
-          if [ ! -f data/history.json ]; then
-            echo "No hay historial que guardar"
-            exit 0
-          fi
-          if sha256sum --check --status "$RUNNER_TEMP/historial.antes" 2>/dev/null; then
-            echo "Sin cambios en el historial"
-            exit 0
-          fi
           git config user.name "cheapflights-bot"
           git config user.email "cheapflights-bot@users.noreply.github.com"
-          blob=$(git hash-object -w data/history.json)
-          tree=$(printf '100644 blob %s\thistory.json\n' "$blob" | git mktree)
-          commit=$(git commit-tree "$tree" -m "datos: precios $(date -u +'%Y-%m-%d %H:%M UTC') (${{ inputs.command }})")
-          for i in 1 2 3 4; do
-            git push --force origin "$commit:refs/heads/datos" && exit 0
-            sleep $((i * 5))
-          done
-          echo "No se pudo guardar el historial" >&2
-          exit 1
+          mkdir -p data
 
-      # Si algo falla (error, bloqueo total de Google o se pasa del tiempo), te llega un aviso.
+          traer() {
+            if git fetch -q --depth=1 origin datos 2>/dev/null; then
+              git show FETCH_HEAD:history.json > data/history.json
+              echo "Historial traído de la rama datos ($(wc -c < data/history.json) bytes)"
+            else
+              echo "Aún no hay rama datos: se empieza con lo que haya en data/"
+            fi
+            sha256sum data/history.json > "$RUNNER_TEMP/historial.antes" 2>/dev/null || true
+          }
+
+          guardar() {
+            [ -f data/history.json ] || { echo "No hay historial que guardar"; return 0; }
+            if sha256sum --check --status "$RUNNER_TEMP/historial.antes" 2>/dev/null; then
+              echo "Sin cambios en el historial"; return 0
+            fi
+            blob=$(git hash-object -w data/history.json)
+            tree=$(printf '100644 blob %s\thistory.json\n' "$blob" | git mktree)
+            commit=$(git commit-tree "$tree" -m "datos: precios $(date -u +'%Y-%m-%d %H:%M UTC') ($COMANDO)")
+            for i in 1 2 3 4; do
+              git push -q --force origin "$commit:refs/heads/datos" && { echo "Historial guardado en la rama datos"; return 0; }
+              sleep $((i * 5))
+            done
+            echo "No se pudo guardar el historial" >&2
+            return 1
+          }
+
+          rc=0
+          for vuelta in $(seq 1 "$VUELTAS"); do
+            if [ "$vuelta" -gt 1 ]; then
+              echo "Pausa de $PAUSA minutos antes de la vuelta $vuelta"
+              sleep $((PAUSA * 60))
+            fi
+            echo "::group::Vuelta $vuelta de $VUELTAS · $(date -u +'%H:%M UTC')"
+            traer
+            python -m cheapflights $COMANDO || rc=$?
+            guardar || rc=$?
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      # Si algo falla (error, bloqueo largo de Google o se pasa del tiempo), te llega un aviso.
       - name: Avisar si falló
         if: failure() || cancelled()
         env:
@@ -105,6 +134,7 @@ jobs:
           ENLACE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           case "$COMANDO" in
+            *goteo*) QUE="La búsqueda de vuelos" ;;
             *nacional*) QUE="La búsqueda de vuelos en Colombia" ;;
             *internacional*) QUE="La búsqueda de vuelos internacionales" ;;
             resumen*) QUE="El resumen diario" ;;
