@@ -10,16 +10,22 @@ from pathlib import Path
 import yaml
 
 from .places import CITY_NAMES
+from .search import Route
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 KINDS = ("domestic", "international")
 KIND_LABEL = {"domestic": "Colombia", "international": "Internacional"}
+DEFAULT_NIGHTS = {"domestic": (2, 5), "international": (6, 14)}
+DEFAULT_BAGS = {"domestic": 0, "international": 1}
+FEEDER_EXTRA_NIGHTS = 2  # la conexión puede salir el día anterior y volver el día siguiente
 
 
 @dataclass(frozen=True)
 class SearchSettings:
     request_delay_seconds: float = 2.0
     max_days_ahead: int = 300
+    both_bag_prices: bool = True  # consultar también la otra maleta (alrededor de cada oferta) para mostrar ambos precios
+    parallel_requests: int = 3  # peticiones simultáneas a Google dentro de una búsqueda
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,7 @@ class Feeder:
     destination: str
 
     @property
-    def route(self) -> str:
+    def pair(self) -> str:
         return f"{self.origin}-{self.destination}"
 
 
@@ -68,6 +74,8 @@ class Zone:
     origins: tuple[str, ...]
     destinations: tuple[str, ...]
     months_ahead: int
+    nights: tuple[int, int] = (2, 5)  # cuántas noches dura el viaje (mínimo, máximo)
+    bags: int = 0  # 1 = el 🔥 se decide con el precio con maleta facturada; 0 = sin maleta
     super_price: float | None = None  # precio fijo opcional (toda la zona)
     cheap_price: float | None = None
     prices: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)  # por destino
@@ -84,8 +92,21 @@ class Zone:
             own[1] if own[1] is not None else self.cheap_price,
         )
 
-    def routes(self) -> list[tuple[str, str]]:
-        return [(o, d) for o in self.origins for d in self.destinations if o != d]
+    def route(self, origin: str, destination: str, bags: int | None = None) -> Route:
+        return Route(origin, destination, self.nights, self.bags if bags is None else bags)
+
+    def routes(self) -> list[Route]:
+        """Las búsquedas que deciden el 🔥: una por origen y destino, con la maleta de la zona."""
+        return [self.route(o, d) for o in self.origins for d in self.destinations if o != d]
+
+    def searches(self, both_bag_prices: bool) -> list[Route]:
+        """Todo lo que se consulta a Google: la búsqueda que decide y, si se pide, la otra maleta."""
+        out: list[Route] = []
+        for r in self.routes():
+            out.append(r)
+            if both_bag_prices:
+                out.append(r.other_bags)
+        return out
 
 
 # Colombia no tiene horario de verano: siempre UTC−5.
@@ -130,6 +151,31 @@ class Config:
                 return z
         return None
 
+    # -- conexión desde casa hacia los aeropuertos internacionales ---------------------
+    @property
+    def feeder_nights(self) -> tuple[int, int]:
+        """Noches de la conexión: las del viaje internacional, más margen para salir antes y volver después."""
+        intl = self.zones_of_kind("international")
+        lo = min((z.nights[0] for z in intl), default=DEFAULT_NIGHTS["international"][0])
+        hi = max((z.nights[1] for z in intl), default=DEFAULT_NIGHTS["international"][1])
+        return lo, hi + FEEDER_EXTRA_NIGHTS
+
+    @property
+    def feeder_months(self) -> int:
+        return max((z.months_ahead for z in self.zones_of_kind("international")), default=9)
+
+    def feeder_route(self, hub: str, bags: int) -> Route | None:
+        """La búsqueda casa ⇄ hub con la maleta indicada, o None si el hub es casa o no hay conexión."""
+        for f in self.feeders:
+            if f.origin == self.home and f.destination == hub:
+                return Route(f.origin, f.destination, self.feeder_nights, bags)
+        return None
+
+    def feeder_searches(self) -> list[Route]:
+        """Conexiones a consultar: una por hub y por cada opción de maleta que decida alguna zona internacional."""
+        bags = sorted({z.bags for z in self.zones_of_kind("international")})
+        return [Route(f.origin, f.destination, self.feeder_nights, b) for f in self.feeders for b in bags]
+
     @staticmethod
     def local_now(now: datetime | None = None) -> datetime:
         now = now or datetime.now(timezone.utc)
@@ -164,6 +210,31 @@ def _price_pair(d: dict, where: str) -> tuple[float | None, float | None]:
     return sup, cheap
 
 
+def _nights(value, where: str) -> tuple[int, int]:
+    """[mín, máx] noches. Un solo número vale como rango de una sola duración."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = [value, value]
+    try:
+        lo, hi = (int(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{where}: nights debe ser [mínimo, máximo] de noches, ej. [2, 5]") from None
+    if lo < 1 or hi < lo or hi > 30:
+        raise ValueError(f"{where}: nights debe cumplir 1 ≤ mínimo ≤ máximo ≤ 30 (tienes [{lo}, {hi}])")
+    return lo, hi
+
+
+def _bags(value, where: str) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if value in (0, 1):
+        return int(value)
+    if isinstance(value, str) and _norm(value) in ("si", "sí", "true", "con maleta", "con", "1"):
+        return 1
+    if isinstance(value, str) and _norm(value) in ("no", "false", "sin maleta", "sin", "0"):
+        return 0
+    raise ValueError(f"{where}: bags debe ser true (con maleta facturada) o false (sin maleta)")
+
+
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
 
@@ -184,6 +255,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
 
     origins_by_kind = raw.get("origins") or {}
     months_by_kind = raw.get("months_ahead") or {}
+    nights_by_kind = {k: _nights(v, f"nights.{k}") for k, v in (raw.get("nights") or {}).items()}
+    bags_by_kind = {k: _bags(v, f"bags.{k}") for k, v in (raw.get("bags") or {}).items()}
     home = _iata(raw.get("home", "BGA"))
     default_origins = {"domestic": [home], "international": ["BOG", "MDE"]}
     default_months = {"domestic": 6, "international": 9}
@@ -191,6 +264,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     feeders = tuple(
         Feeder(origin=_iata(f["from"]), destination=_iata(f["to"])) for f in (raw.get("feeders") or [])
     )
+    for f in feeders:
+        if f.origin != home:
+            raise ValueError(f"feeders: la conexión {f.pair} debe salir de casa ({home})")
+        if f.origin == f.destination:
+            raise ValueError(f"feeders: la conexión {f.pair} no tiene sentido")
 
     names: dict[str, str] = {}
     zones: list[Zone] = []
@@ -221,6 +299,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
             raise ValueError(f"Zona '{zname}' no tiene destinos")
         super_price, cheap_price = _price_pair(z, f"Zona '{zname}'")
         origins = z.get("origins") or origins_by_kind.get(kind) or default_origins[kind]
+        nights = _nights(z["nights"], f"Zona '{zname}'") if z.get("nights") is not None else nights_by_kind.get(kind, DEFAULT_NIGHTS[kind])
+        bags = _bags(z["bags"], f"Zona '{zname}'") if z.get("bags") is not None else bags_by_kind.get(kind, DEFAULT_BAGS[kind])
         zones.append(
             Zone(
                 name=zname,
@@ -229,6 +309,8 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
                 origins=tuple(_iata(o) for o in origins),
                 destinations=tuple(dests),
                 months_ahead=int(z.get("months_ahead") or months_by_kind.get(kind) or default_months[kind]),
+                nights=nights,
+                bags=bags,
                 super_price=super_price,
                 cheap_price=cheap_price,
                 prices=prices,
@@ -246,18 +328,13 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         if dupes:
             raise ValueError(f"Destinos repetidos en varias zonas ({kind}): {', '.join(dupes)}")
 
-    # El tramo desde casa (ej. BGA→BOG) debe buscarse tan lejos como los internacionales,
-    # o los totales desde Bucaramanga desaparecen para fechas lejanas.
-    intl_months = max((z.months_ahead for z in zones if z.kind == "international"), default=0)
-    for f in feeders:
-        covering = [z for z in zones if f.origin in z.origins and f.destination in z.destinations]
-        if not covering:
-            raise ValueError(f"feeders: la ruta {f.route} no está en ninguna zona (agrégala para que se busque)")
-        if max(z.months_ahead for z in covering) < intl_months:
-            raise ValueError(
-                f"feeders: {f.route} se busca {max(z.months_ahead for z in covering)} meses pero los internacionales "
-                f"{intl_months}; pon months_ahead: {intl_months} en su zona"
-            )
+    intl_origins = {o for z in zones if z.kind == "international" for o in z.origins if o != home}
+    missing = sorted(intl_origins - {f.destination for f in feeders})
+    if missing:
+        raise ValueError(
+            f"feeders: falta la conexión desde {home} hacia {', '.join(missing)} "
+            "(agrégala para poder sumar el total desde casa)"
+        )
 
     return Config(
         home=home,

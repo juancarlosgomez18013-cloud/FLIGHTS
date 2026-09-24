@@ -1,8 +1,10 @@
 # ════════════════════════════════════════════════════════════════════
-#  Rastreador de vuelos baratos · configuración
+#  Rastreador de viajes baratos · configuración
 #
-#  Todos los precios son en pesos colombianos, SOLO IDA, 1 adulto,
-#  sin maleta (la tarifa más básica que muestra Google Flights).
+#  Todos los precios son en pesos colombianos, IDA Y VUELTA, 1 adulto.
+#  Cada ruta se busca de dos formas: sin maleta (tarifa básica) y con
+#  1 maleta facturada. El aviso muestra los dos precios; cuál de ellos
+#  decide si algo es 🔥 o 👍 se elige por tipo de viaje o por zona (bags).
 #
 #  Para cambiar algo, edita este archivo en GitHub y guarda (commit):
 #  el sistema lo toma solo en la siguiente búsqueda.
@@ -13,25 +15,43 @@ currency: COP
 country: CO        # mercado de Google Flights (qué aerolíneas y precios muestra)
 language: es
 
-# Desde dónde se busca cada tipo de vuelo
+# Desde dónde se busca cada tipo de viaje
 origins:
   domestic: [BGA]            # nacionales: salen de Bucaramanga
   international: [BOG, MDE]  # internacionales: salen de Bogotá o Medellín
-                             # (el aviso te suma el vuelo desde Bucaramanga)
+                             # (el aviso te suma la conexión ida y vuelta desde Bucaramanga)
 
-# Cuántos meses hacia adelante mirar
+# Cuántos meses hacia adelante mirar (fecha de ida)
 months_ahead:
   domestic: 6
   international: 9
+
+# ── Cuánto dura el viaje: [mínimo, máximo] de noches ────────────────
+#  Una sola búsqueda a Google trae todas las combinaciones de ida y
+#  vuelta dentro del rango, así que un rango amplio no cuesta más.
+#  Se puede cambiar por zona con `nights: [3, 4]`.
+nights:
+  domestic: [2, 5]           # fines de semana y puentes
+  international: [6, 14]     # una o dos semanas
+
+# ── Maleta: qué precio decide el 🔥 ─────────────────────────────────
+#  true  = el precio con 1 maleta facturada
+#  false = el precio sin maleta (tarifa básica)
+#  El otro precio siempre se muestra en el aviso como referencia.
+#  Se puede cambiar por zona con `bags: true` o `bags: false`.
+bags:
+  domestic: false            # escapada corta: con la maleta de mano basta
+  international: true        # viaje largo: casi siempre se lleva maleta
 
 # ── Cómo se decide qué es barato ─────────────────────────────────────
 #
 #  🔥 SÚPER BARATO → te llega un mensaje apenas lo encuentro.
 #  👍 BARATO       → aparece en el resumen diario de las 7:30 a. m.
 #
-#  "Precio normal" de una ruta = lo que cuesta la mayoría de sus fechas.
+#  "Precio normal" de una ruta = lo que cuesta la mayoría de sus viajes
+#  (todas las combinaciones de fecha de ida y vuelta).
 #
-#  Etapa 1 (primeras semanas): cada ruta se compara con sus otras fechas.
+#  Etapa 1 (primeras semanas): cada ruta se compara con sus otros viajes.
 #  Etapa 2 (automática cuando la ruta ya tiene historial suficiente):
 #     se compara con lo que esa ruta ha costado en el tiempo.
 #
@@ -39,7 +59,7 @@ months_ahead:
 levels:
   cheap_below_normal: 20        # 👍 si está 20 % o más bajo el precio normal
   super_below_normal: 25        # 🔥 si está 25 % o más bajo el precio normal…
-  super_below_cheap_dates: 15   #    …y 15 % bajo las fechas más baratas de siempre
+  super_below_cheap_dates: 15   #    …y 15 % bajo los viajes más baratos de siempre
                                 #    (así la tarifa promo de todos los días no cuenta como 🔥)
   history_min_days: 14          # días de seguimiento antes de pasar a la etapa 2
   history_min_runs: 20          # y mínimo de búsquedas guardadas
@@ -62,11 +82,14 @@ summary:
   send_when_empty: true         # si no hay nada barato, igual manda un mensaje corto
 
 search:
-  request_delay_seconds: 2.0    # pausa entre rutas para que Google no bloquee
+  request_delay_seconds: 2.0    # pausa entre búsquedas para que Google no bloquee
   max_days_ahead: 300
+  both_bag_prices: true         # consultar también el precio con la otra maleta
+                                # (solo alrededor de cada oferta; pocas peticiones extra)
+  parallel_requests: 3          # peticiones a Google a la vez dentro de una búsqueda
 
-# Vuelos desde Bucaramanga que se suman a los internacionales para dar el total.
-# Deben estar en una zona que se busque tantos meses como los internacionales.
+# Conexiones desde casa hacia los aeropuertos internacionales. Se buscan
+# ida y vuelta con las fechas del viaje y se suman para dar el total.
 feeders:
   - from: BGA
     to: BOG
@@ -79,9 +102,12 @@ feeders:
 #  Cada destino es "CÓDIGO: Ciudad". Si quieres un precio fijo propio
 #  (además de la comparación automática), escríbelo así:
 #
-#      CTG: {ciudad: Cartagena, super_barato: 80000, barato: 100000}
+#      CTG: {ciudad: Cartagena, super_barato: 250000, barato: 320000}
 #
-#  Con eso, cualquier fecha a 80.000 o menos es 🔥 y a 100.000 o menos es 👍.
+#  Con eso, cualquier viaje a 250.000 o menos es 🔥 y a 320.000 o menos
+#  es 👍 (ida y vuelta, con la maleta que decida la zona).
+#
+#  Por zona también puedes poner `nights: [3, 4]` o `bags: true`.
 # ════════════════════════════════════════════════════════════════════
 zones:
 
@@ -90,14 +116,12 @@ zones:
   - name: Bogotá
     emoji: "🏙️"
     kind: domestic
-    months_ahead: 9              # 9 meses: se usa para sumar el vuelo a los internacionales
     destinations:
       BOG: Bogotá
 
   - name: Medellín y Antioquia
     emoji: "🌸"
     kind: domestic
-    months_ahead: 9              # 9 meses: se usa para sumar el vuelo a los internacionales
     destinations:
       MDE: Medellín
       EOH: Medellín (Olaya Herrera)
@@ -117,6 +141,7 @@ zones:
   - name: San Andrés
     emoji: "🐠"
     kind: domestic
+    nights: [3, 7]               # a la isla se va por más días
     destinations:
       ADZ: San Andrés
 

@@ -1,6 +1,7 @@
 import pytest
 
 from cheapflights.config import load_config
+from cheapflights.search import Route
 
 # Palabra que debe aparecer en el nombre oficial del aeropuerto (según fli) para cada código.
 # Así se detecta un código que existe pero es de otro lugar (ej. YOP = Rainbow Lake, Canadá).
@@ -20,13 +21,23 @@ def test_real_config_zones(config):
     names = [z.name for z in config.zones]
     for expected in ["Bogotá", "Costa Caribe", "Eje Cafetero", "Brasil", "Europa"]:
         assert expected in names
-    assert "Resto de Colombia" not in names
     costa = config.zone("costa caribe")
     assert costa.kind == "domestic" and costa.origins == ("BGA",) and "CTG" in costa.destinations
-    assert config.zone("Peru, Ecuador, Bolivia y Venezuela").origins == ("BOG", "MDE")
-    assert config.zone("Europa").months_ahead == 9
-    # los tramos desde casa se buscan tan lejos como los internacionales
-    assert config.zone("Bogotá").months_ahead == 9 and config.zone("Medellín y Antioquia").months_ahead == 9
+    assert costa.nights == (2, 5) and costa.bags == 0 and costa.months_ahead == 6
+    europa = config.zone("Europa")
+    assert europa.origins == ("BOG", "MDE") and europa.months_ahead == 9
+    assert europa.nights == (6, 14) and europa.bags == 1
+    assert config.zone("San Andrés").nights == (3, 7)  # ajuste por zona
+    assert costa.route("BGA", "CTG") == Route("BGA", "CTG", (2, 5), 0)
+    assert costa.searches(True)[:2] == [Route("BGA", "CTG", (2, 5), 0), Route("BGA", "CTG", (2, 5), 1)]
+    assert all(r.bags == 0 for r in costa.searches(False))
+
+
+def test_feeders_follow_the_international_trip(config):
+    assert config.feeder_nights == (6, 16) and config.feeder_months == 9
+    assert config.feeder_searches() == [Route("BGA", "BOG", (6, 16), 1), Route("BGA", "MDE", (6, 16), 1)]
+    assert config.feeder_route("MDE", 0) == Route("BGA", "MDE", (6, 16), 0)
+    assert config.feeder_route("BGA", 1) is None and config.feeder_route("CLO", 1) is None
 
 
 def test_every_destination_has_a_city_name(config):
@@ -80,6 +91,26 @@ def test_optional_fixed_prices_per_destination(tmp_path):
     assert c2.zone("X").fixed_prices("BOG") == (None, None)
 
 
+def test_nights_and_bags_defaults_and_overrides(tmp_path):
+    body = (
+        "nights: {domestic: [3, 4], international: 7}\n"
+        "bags: {domestic: true}\n"
+        "feeders: [{from: BGA, to: BOG}, {from: BGA, to: MDE}]\n"
+        "zones:\n"
+        "  - {name: A, destinations: {CTG: Cartagena}}\n"
+        "  - {name: B, nights: [1, 2], bags: no, destinations: {CLO: Cali}}\n"
+        "  - {name: C, kind: international, destinations: {LIM: Lima}}\n"
+    )
+    c = load_config(_write(tmp_path, body))
+    assert (c.zone("A").nights, c.zone("A").bags) == ((3, 4), 1)
+    assert (c.zone("B").nights, c.zone("B").bags) == ((1, 2), 0)
+    assert (c.zone("C").nights, c.zone("C").bags) == ((7, 7), 1)  # un número = esa duración exacta; internacional con maleta
+    assert c.feeder_nights == (7, 9)
+    for bad in ("nights: {domestic: [5, 2]}\n", "nights: {domestic: [0, 3]}\n", "bags: {domestic: quizás}\n"):
+        with pytest.raises(ValueError):
+            load_config(_write(tmp_path, bad + "zones:\n  - {name: A, destinations: {CTG: Cartagena}}\n"))
+
+
 def test_super_must_be_below_cheap(tmp_path):
     p = _write(tmp_path, "zones:\n  - name: X\n    destinations:\n      BOG: {ciudad: B, super_barato: 200, barato: 100}\n")
     with pytest.raises(ValueError, match="menor"):
@@ -97,15 +128,12 @@ def test_duplicate_destination_in_same_kind(tmp_path):
         load_config(_write(tmp_path, body))
 
 
-def test_feeder_must_cover_international_window(tmp_path):
-    body = (
-        "feeders: [{from: BGA, to: BOG}]\n"
-        "zones:\n"
-        "  - {name: A, kind: domestic, months_ahead: 6, destinations: {BOG: Bogotá}}\n"
-        "  - {name: B, kind: international, months_ahead: 9, destinations: {LIM: Lima}}\n"
-    )
-    with pytest.raises(ValueError, match="months_ahead: 9"):
+def test_international_origins_need_a_feeder(tmp_path):
+    body = "zones:\n  - {name: B, kind: international, destinations: {LIM: Lima}}\n"
+    with pytest.raises(ValueError, match="conexión desde BGA hacia BOG, MDE"):
         load_config(_write(tmp_path, body))
+    with pytest.raises(ValueError, match="salir de casa"):
+        load_config(_write(tmp_path, "feeders: [{from: BOG, to: MDE}]\n" + body))
 
 
 def test_no_zones(tmp_path):

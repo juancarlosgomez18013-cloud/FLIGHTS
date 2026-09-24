@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from datetime import date
 
 from .config import KINDS, Config
+from .festivos import festivos_en
 from .levels import CHEAP, SUPER, Verdict
 from .notify import to_plain
 from .places import flag
+from .search import Fares
 
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 DIAS_CORTOS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
@@ -24,9 +26,11 @@ MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto
 MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 MAX_VISIBLE_CHARS = 3500  # Telegram permite 4096 caracteres visibles; dejamos margen
-FOOTER = "ℹ️ Solo ida · 1 adulto · sin maleta. Confirma el precio antes de comprar."
+FOOTER = "ℹ️ Ida y vuelta · 1 adulto · precio por persona. Confirma el precio antes de comprar."
 KIND_HEADER = {"domestic": "🇨🇴 *COLOMBIA*", "international": "✈️ *INTERNACIONAL*"}
 LEVEL_TITLE = {SUPER: "🔥 *Súper barato*", CHEAP: "👍 *Barato*"}
+BAGS_TEXT = {0: "sin maleta", 1: "con maleta facturada"}
+BAGS_ICON = {0: "🎒", 1: "🧳"}
 COMPACT_FROM = 3  # con 3 o más 🔥 a la vez, se manda una lista corta en vez de fichas
 
 
@@ -60,12 +64,34 @@ def fmt_date_short(day: str, today: date | None = None) -> str:
     return text
 
 
+def fmt_nights(n: int) -> str:
+    return f"{n} noche{'s' if n != 1 else ''}"
+
+
+def fmt_trip_short(out: str, back: str, today: date | None = None) -> str:
+    """'sáb 24 → mié 28 oct' (o 'sáb 28 nov → mié 2 dic'; con año si no es el actual)."""
+    o, b = date.fromisoformat(out), date.fromisoformat(back)
+    left = f"{DIAS_CORTOS[o.weekday()]} {o.day}"
+    if (o.year, o.month) != (b.year, b.month):
+        left += f" {MESES_CORTOS[o.month - 1]}"
+        if o.year != b.year:
+            left += f" {o.year}"
+    return f"{left} → {fmt_date_short(back, today)}"
+
+
+def fmt_trip_long(out: str, back: str, today: date | None = None) -> str:
+    """'sábado 24 de octubre → miércoles 28 de octubre · 4 noches' (con año si no es el actual)."""
+    o, b = date.fromisoformat(out), date.fromisoformat(back)
+    left = fmt_date_long(out, today if o.year != b.year else None)
+    return f"{left} → {fmt_date_long(back, today)} · {fmt_nights((b - o).days)}"
+
+
 def fmt_percent(value: float) -> str:
     return f"{value:.0f} %"
 
 
-def flights_link(config: Config, origin: str, destination: str, day: str) -> str:
-    q = f"Flights from {origin} to {destination} on {day} one way"
+def flights_link(config: Config, origin: str, destination: str, out: str, back: str) -> str:
+    q = f"Flights from {origin} to {destination} on {out} through {back}"
     return "https://www.google.com/travel/flights?" + urllib.parse.urlencode(
         {"q": q, "curr": config.currency, "hl": config.language, "gl": config.country}
     )
@@ -83,6 +109,16 @@ def visible_len(text: str) -> int:
 def destination_icon(v: Verdict) -> str:
     """Bandera del país para internacionales; emoji de la zona para Colombia."""
     return flag(v.destination) or v.zone.emoji
+
+
+def holiday_text(out: str, back: str, today: date | None = None) -> str | None:
+    """'🎉 Puente festivo: lun 2 nov (Todos los Santos)' si el viaje incluye un festivo."""
+    found = festivos_en(out, back)
+    if not found:
+        return None
+    puente = any(d.weekday() in (0, 4) for d, _ in found)
+    shown = " y ".join(f"{fmt_date_short(d.isoformat(), today)} ({name})" for d, name in found[:2])
+    return ("🎉 Puente festivo: " if puente else "🎉 Festivo en el viaje: ") + shown
 
 
 # -- empaquetado en mensajes -----------------------------------------------------
@@ -134,13 +170,14 @@ def texts(packed: list[tuple[str, list[Verdict]]]) -> list[str]:
 
 def _other_dates_line(config: Config, v: Verdict, today: date) -> str | None:
     n = config.summary.extra_dates
-    if v.same_price_dates:
-        shown = ", ".join(fmt_date_short(d, today) for d in v.same_price_dates[:n])
-        more = len(v.same_price_dates)
-        return f"📅 Mismo precio en {more} fecha{'s' if more != 1 else ''} más: {shown}{'…' if more > n else ''}"
-    if v.cheap_dates:
-        cheapest = sorted(v.cheap_dates, key=lambda dp: (dp[1], dp[0]))[:n]
-        shown = " · ".join(f"{fmt_date_short(d, today)} {fmt_price(p, v.currency)}" for d, p in sorted(cheapest))
+    outs = v.same_price_outs
+    if outs:
+        shown = ", ".join(fmt_date_short(d, today) for d in outs[:n])
+        more = len(outs)
+        return f"📅 Mismo precio saliendo en {more} fecha{'s' if more != 1 else ''} más: {shown}{'…' if more > n else ''}"
+    if v.cheap_trips:
+        cheapest = sorted(v.cheap_trips, key=lambda t: (t[2], t[0]))[:n]
+        shown = " · ".join(f"{fmt_trip_short(o, b, today)} {fmt_price(p, v.currency)}" for o, b, p in sorted(cheapest))
         return f"📅 También barato: {shown}"
     return None
 
@@ -163,20 +200,27 @@ def _history_line(v: Verdict) -> str | None:
     return None
 
 
+def _other_bag_text(v: Verdict) -> str | None:
+    if v.other_bag_price is None:
+        return None
+    other = 1 - v.bags
+    return f"{BAGS_ICON[other]} {BAGS_TEXT[other][0].upper()}{BAGS_TEXT[other][1:]}: {fmt_price(v.other_bag_price, v.currency)}"
+
+
 def _feeder_lines(config: Config, v: Verdict, today: date) -> list[str]:
     if v.zone.kind != "international" or v.origin == config.home:
         return []
     home = config.city(v.feeder_origin or config.home)
     hub = config.city(v.origin)
     if v.feeder_price is None:
-        return [f"➕ Más el vuelo {home} → {hub} (aún sin precio)"]
+        return [f"➕ Más el vuelo {home} ⇄ {hub} (aún sin precio)"]
     if v.feeder_estimated:
         return [
-            f"➕ {home} → {hub}: {fmt_approx(v.feeder_price, v.currency)} (aprox.)",
+            f"➕ {home} ⇄ {hub}: {fmt_approx(v.feeder_price, v.currency)} (aprox.)",
             f"🧾 *Total desde {home}: {fmt_approx(v.total, v.currency)}*",
         ]
     return [
-        f"➕ {home} → {hub}: {fmt_price(v.feeder_price, v.currency)} ({fmt_date_short(v.feeder_date, today)})",
+        f"➕ {home} ⇄ {hub}: {fmt_price(v.feeder_price, v.currency)} ({fmt_trip_short(v.feeder_out, v.feeder_back, today)})",
         f"🧾 *Total desde {home}: {fmt_price(v.total, v.currency)}*",
     ]
 
@@ -186,9 +230,16 @@ def _feeder_lines(config: Config, v: Verdict, today: date) -> list[str]:
 def format_super_alert(config: Config, v: Verdict, today: date) -> str:
     lines = [
         f"🔥 *SÚPER BARATO* · {v.zone.label}",
-        f"*{config.city(v.origin)} → {config.city(v.destination)}*",
-        f"💰 *{fmt_price(v.price, v.currency)}* · {fmt_date_long(v.date, today)}",
+        f"*{config.city(v.origin)} ⇄ {config.city(v.destination)}*",
+        f"💰 *{fmt_price(v.price, v.currency)}* ida y vuelta · {BAGS_TEXT[v.bags]}",
     ]
+    other = _other_bag_text(v)
+    if other:
+        lines.append(other)
+    lines.append(f"🗓️ {fmt_trip_long(v.out, v.back, today)}")
+    holiday = holiday_text(v.out, v.back, today)
+    if holiday:
+        lines.append(holiday)
     lines.extend(_feeder_lines(config, v, today))
     savings = _savings_text(v)
     if savings:
@@ -196,7 +247,7 @@ def format_super_alert(config: Config, v: Verdict, today: date) -> str:
     for extra in (_history_line(v), _other_dates_line(config, v, today)):
         if extra:
             lines.append(extra)
-    lines.append(link("👉 Ver en Google Flights", flights_link(config, v.origin, v.destination, v.date)))
+    lines.append(link("👉 Ver en Google Flights", flights_link(config, v.origin, v.destination, v.out, v.back)))
     return "\n".join(lines)
 
 
@@ -204,21 +255,27 @@ def _item(config: Config, v: Verdict, today: date) -> str:
     """Una línea (y detalles cortos) por destino, para listas y el resumen."""
     city = config.city(v.destination)
     lines = [
-        f"• {destination_icon(v)} *{link(city, flights_link(config, v.origin, v.destination, v.date))}*: "
-        f"{fmt_price(v.price, v.currency)} · {fmt_date_short(v.date, today)}"
+        f"• {destination_icon(v)} *{link(city, flights_link(config, v.origin, v.destination, v.out, v.back))}*: "
+        f"{fmt_price(v.price, v.currency)} · {fmt_trip_short(v.out, v.back, today)} ({fmt_nights(v.nights)})"
     ]
-    details = []
+    details = [BAGS_TEXT[v.bags]]
+    other = _other_bag_text(v)
+    if other:
+        details[0] += f" · {other[2:3].lower()}{other[3:]}"
     if v.zone.kind == "international":
         via = f"sale de {config.city(v.origin)}"
         if v.feeder_price is not None:
-            via += f" · con el vuelo desde {config.city(v.feeder_origin or config.home)}: {fmt_approx(v.total, v.currency)}"
+            via += f" · con la conexión desde {config.city(v.feeder_origin or config.home)}: {fmt_approx(v.total, v.currency)}"
         details.append(via)
+    holiday = holiday_text(v.out, v.back, today)
+    if holiday:
+        details.append(holiday[2:].strip()[0].lower() + holiday[2:].strip()[1:])
     savings = _savings_text(v)
     if savings:
         details.append(savings)
-    other = _other_dates_line(config, v, today)
-    if other:
-        details.append(other.removeprefix("📅 ").replace("Mismo precio", "mismo precio").replace("También barato", "también barato"))
+    other_dates = _other_dates_line(config, v, today)
+    if other_dates:
+        details.append(other_dates.removeprefix("📅 ").replace("Mismo precio", "mismo precio").replace("También barato", "también barato"))
     lines.extend(f"   {d}" for d in details)
     return "\n".join(lines)
 
@@ -228,7 +285,7 @@ def format_alerts_packed(config: Config, verdicts: list[Verdict], today: date) -
     ordered = sorted(verdicts, key=lambda v: (-v.savings_percent, v.total))
     if len(ordered) < COMPACT_FROM:
         return pack([Piece(format_super_alert(config, v, today) + "\n", verdicts=(v,)) for v in ordered])
-    title = f"🔥 *{len(ordered)} vuelos súper baratos*"
+    title = f"🔥 *{len(ordered)} viajes súper baratos*"
     pieces = [Piece(title + "\n")]
     for kind in KINDS:
         items = [v for v in ordered if v.zone.kind == kind]
@@ -267,7 +324,7 @@ def format_summary(
     """Resumen diario. `stale_days_by_kind[kind]` = días sin datos nuevos (None si está al día)."""
     stale_days_by_kind = stale_days_by_kind or {}
     limit = config.summary.max_per_section
-    pieces = [Piece(f"☀️ *Vuelos baratos de hoy* · {fmt_date_long(today.isoformat())}\n")]
+    pieces = [Piece(f"☀️ *Viajes baratos de hoy* · {fmt_date_long(today.isoformat())}\n")]
     anything = False
     for kind in KINDS:
         if not config.zones_of_kind(kind):
@@ -303,12 +360,13 @@ def format_summary(
 
 # -- plan semanal 📅 -------------------------------------------------------------
 
-def best_month(calendar: dict[str, float], cheap_limit: float, today: date) -> tuple[str, int] | None:
-    """Mes con más fechas baratas (≤ cheap_limit). Ignora el mes actual si le quedan <15 días."""
-    counts: Counter[str] = Counter()
-    for d, p in calendar.items():
-        if d > today.isoformat() and p and float(p) <= cheap_limit:
-            counts[d[:7]] += 1
+def best_month(fares: Fares, cheap_limit: float, today: date) -> tuple[str, int] | None:
+    """Mes con más fechas de ida baratas (≤ cheap_limit). Ignora el mes actual si le quedan <15 días."""
+    days_by_month: dict[str, set[str]] = {}
+    for (out, _), p in fares.items():
+        if out > today.isoformat() and p and float(p) <= cheap_limit:
+            days_by_month.setdefault(out[:7], set()).add(out)
+    counts = Counter({m: len(days) for m, days in days_by_month.items()})
     current = today.isoformat()[:7]
     days_left = 31 - today.day
     if days_left < 15:
@@ -322,7 +380,7 @@ def best_month(calendar: dict[str, float], cheap_limit: float, today: date) -> t
 
 def format_plan(config: Config, rows_by_kind: dict[str, list[tuple[Verdict, tuple[str, int] | None]]], today: date) -> list[str]:
     """rows = [(destino más barato de la zona, (mes con más fechas baratas, cuántas))]."""
-    pieces = [Piece("📅 *Plan de viajes* · lo más barato de los próximos meses\n")]
+    pieces = [Piece("📅 *Plan de viajes* · lo más barato de los próximos meses, ida y vuelta\n")]
     for kind in KINDS:
         rows = rows_by_kind.get(kind)
         if rows is None:
@@ -335,14 +393,17 @@ def format_plan(config: Config, rows_by_kind: dict[str, list[tuple[Verdict, tupl
             city = config.city(v.destination)
             place = "" if city == v.zone.name else f"{city} "
             mark = {SUPER: " 🔥", CHEAP: " 👍"}.get(v.level, "")
-            lines = [f"{v.zone.emoji} *{v.zone.name}*: {place}{fmt_price(v.price, v.currency)} · {fmt_date_short(v.date, today)}{mark}"]
+            lines = [
+                f"{v.zone.emoji} *{v.zone.name}*: {place}{fmt_price(v.price, v.currency)} · "
+                f"{fmt_trip_short(v.out, v.back, today)} ({fmt_nights(v.nights)}, {BAGS_TEXT[v.bags]}){mark}"
+            ]
             if v.zone.kind == "international":
                 via = f"   sale de {config.city(v.origin)}"
                 if v.feeder_price is not None:
-                    via += f" · con el vuelo desde {config.city(v.feeder_origin or config.home)}: {fmt_approx(v.total, v.currency)}"
+                    via += f" · con la conexión desde {config.city(v.feeder_origin or config.home)}: {fmt_approx(v.total, v.currency)}"
                 lines.append(via)
             if month and month[1] >= 3:  # con 1 o 2 fechas no dice nada útil
-                lines.append(f"   🗓️ Más fechas baratas en {month[0]} ({month[1]} días)")
+                lines.append(f"   🗓️ Más fechas baratas en {month[0]} ({month[1]} días de salida)")
             pieces.append(Piece("\n".join(lines), context=f"{header} (sigue)"))
         pieces.append(Piece(""))
     while pieces and pieces[-1].text == "":
@@ -356,6 +417,7 @@ def format_test(config: Config, sample: Verdict | None, today: date) -> list[str
     intro = (
         "✅ *Prueba: el bot de vuelos funciona*\n"
         "Si ves este mensaje, los avisos te van a llegar aquí.\n\n"
+        "Busco viajes de *ida y vuelta*, con y sin maleta facturada.\n"
         "🔥 *Súper barato* → te escribo apenas lo encuentro (reviso Colombia cada 6 horas e internacional cada mañana).\n"
         "☀️ *Resumen* → todos los días a las 7:30 a. m., con lo 🔥 y lo 👍 barato.\n"
         "📅 *Plan de viajes* → los lunes."

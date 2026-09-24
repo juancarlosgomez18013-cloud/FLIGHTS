@@ -2,103 +2,141 @@ from dataclasses import replace
 from datetime import timedelta
 
 from cheapflights.config import LevelSettings
-from cheapflights.levels import CHEAP, SUPER, best_per_destination, classify, feeder_cost, with_feeder
+from cheapflights.levels import CHEAP, SUPER, best_per_destination, classify, classify_from_history, enrich, feeder_cost
+from cheapflights.search import Route, RouteResult
 
-from .conftest import NOW, TODAY, ZONE, calendar, make_result, runs
+from .conftest import NOW, TODAY, ZONE, fares, route, runs
 
 LEVELS = LevelSettings()
 PLAIN = replace(ZONE, super_price=None, cheap_price=None)
+R = route()
+
+
+def _iso(days: int) -> str:
+    return (TODAY + timedelta(days=days)).isoformat()
 
 
 def test_promo_on_many_dates_is_cheap_not_super():
     # tarifa promo en 30 % de las fechas: es "lo barato de siempre", 👍 pero no 🔥
-    cal = calendar([86_000] * 30 + [220_000] * 70)
-    v = classify("BGA", "MDE", cal, "COP", PLAIN, LEVELS, [], TODAY)
-    assert v.level == CHEAP and len(v.same_price_dates) == 29
+    v = classify(route("BGA", "MDE"), fares([86_000] * 30 + [220_000] * 70), "COP", PLAIN, LEVELS, [], TODAY)
+    assert v.level == CHEAP and len(v.same_price_trips) == 29 and len(v.same_price_outs) == 29
 
 
 def test_rare_price_far_below_the_rest_is_super():
-    cal = calendar([64_000] * 5 + [80_000] * 30 + [124_000] * 65)
-    v = classify("BGA", "BOG", cal, "COP", PLAIN, LEVELS, [], TODAY)
-    assert v.level == SUPER and v.stage == 1 and v.price == 64_000
+    v = classify(R, fares([64_000] * 5 + [80_000] * 30 + [124_000] * 65), "COP", PLAIN, LEVELS, [], TODAY)
+    assert v.level == SUPER and v.stage == 1 and v.price == 64_000 and v.nights == 2
 
 
 def test_flat_route_is_nothing():
-    v = classify("BGA", "AXM", calendar([316_250] * 50), "COP", PLAIN, LEVELS, [], TODAY)
+    v = classify(route("BGA", "AXM"), fares([316_250] * 50), "COP", PLAIN, LEVELS, [], TODAY)
     assert v.level is None and v.savings_percent == 0
 
 
 def test_fixed_prices_add_to_relative_rules():
-    cal = calendar([316_250] * 50)
+    f = fares([316_250] * 50)
     z = replace(PLAIN, prices={"AXM": (320_000, 400_000)})
-    assert classify("BGA", "AXM", cal, "COP", z, LEVELS, [], TODAY).level == SUPER
+    assert classify(route("BGA", "AXM"), f, "COP", z, LEVELS, [], TODAY).level == SUPER
     z = replace(PLAIN, prices={"AXM": (None, 330_000)})
-    assert classify("BGA", "AXM", cal, "COP", z, LEVELS, [], TODAY).level == CHEAP
+    assert classify(route("BGA", "AXM"), f, "COP", z, LEVELS, [], TODAY).level == CHEAP
 
 
 def test_today_and_past_dates_are_ignored():
-    cal = calendar([10_000], start=TODAY - timedelta(days=2)) | {TODAY.isoformat(): 5_000.0} | calendar([150_000])
-    v = classify("BGA", "BOG", cal, "COP", PLAIN, LEVELS, [], TODAY)
-    assert v.price == 150_000
-    assert classify("BGA", "BOG", {TODAY.isoformat(): 1.0}, "COP", PLAIN, LEVELS, [], TODAY) is None
+    f = fares([10_000], start=TODAY - timedelta(days=2)) | {(_iso(0), _iso(2)): 5_000.0} | fares([150_000])
+    assert classify(R, f, "COP", PLAIN, LEVELS, [], TODAY).price == 150_000
+    assert classify(R, {(_iso(0), _iso(2)): 1.0}, "COP", PLAIN, LEVELS, [], TODAY) is None
+
+
+def test_cheapest_combination_wins_and_nights_follow_it():
+    f = {(_iso(10), _iso(12)): 300_000.0, (_iso(10), _iso(14)): 210_000.0} | fares([300_000] * 30)
+    v = classify(R, f, "COP", PLAIN, LEVELS, [], TODAY)
+    assert (v.out, v.back, v.nights, v.price) == (_iso(10), _iso(14), 4, 210_000)
 
 
 def test_stage2_needs_enough_history():
-    v = classify("BGA", "BOG", calendar([150_000]), "COP", PLAIN, LEVELS, runs([200_000] * 10), TODAY)
+    v = classify(R, fares([150_000]), "COP", PLAIN, LEVELS, runs([200_000] * 10), TODAY)
     assert v.stage == 1
 
 
 def test_stage2_super_requires_rank_and_discount():
     past = runs([200_000 + i * 1000 for i in range(25)])
-    v = classify("BGA", "BOG", calendar([150_000, 300_000]), "COP", PLAIN, LEVELS, past, TODAY)
+    v = classify(R, fares([150_000, 300_000]), "COP", PLAIN, LEVELS, past, TODAY)
     assert v.stage == 2 and v.level == SUPER and v.new_low
-    v = classify("BGA", "BOG", calendar([199_000, 200_000]), "COP", PLAIN, LEVELS, past, TODAY)
+    v = classify(R, fares([199_000, 200_000]), "COP", PLAIN, LEVELS, past, TODAY)
     assert v.level is None  # nuevo mínimo, pero apenas 1 % bajo lo que suele costar
 
 
 def test_stage2_flat_route_is_not_cheap():
-    v = classify("BGA", "BOG", calendar([316_250]), "COP", PLAIN, LEVELS, runs([316_250] * 30), TODAY)
+    v = classify(R, fares([316_250]), "COP", PLAIN, LEVELS, runs([316_250] * 30), TODAY)
     assert v.stage == 2 and v.percentile == 50.0 and v.level is None
 
 
 def test_stage2_fixed_super_still_counts():
     z = replace(PLAIN, prices={"BOG": (90_000, None)})
-    v = classify("BGA", "BOG", calendar([85_000, 90_500]), "COP", z, LEVELS, runs([86_000] * 30), TODAY)
+    v = classify(R, fares([85_000, 90_500]), "COP", z, LEVELS, runs([86_000] * 30), TODAY)
     assert v.stage == 2 and v.level == SUPER
 
 
-def test_other_dates_sorted_by_date_and_really_cheap():
-    cal = calendar([300_000] * 10 + [100_000, 300_000, 150_000, 300_000, 120_000] + [300_000] * 10)
-    v = classify("BGA", "BOG", cal, "COP", PLAIN, LEVELS, [], TODAY)
+def test_other_trips_sorted_by_date_and_really_cheap():
+    f = fares([300_000] * 10 + [100_000, 300_000, 150_000, 300_000, 120_000] + [300_000] * 10)
+    v = classify(R, f, "COP", PLAIN, LEVELS, [], TODAY)
     assert v.price == 100_000
-    prices = [p for _, p in v.cheap_dates]
-    dates = [d for d, _ in v.cheap_dates]
-    assert prices == [150_000, 120_000] and dates == sorted(dates)
+    prices = [p for _, _, p in v.cheap_trips]
+    outs = [o for o, _, _ in v.cheap_trips]
+    assert prices == [150_000, 120_000] and outs == sorted(outs)
     assert all(p <= v.cheap_limit for p in prices)
 
 
 def test_near_normal_uses_dates_around_the_deal():
-    cal = calendar([100_000] * 40 + [500_000] * 140)  # barato cerca, carísimo lejos
-    v = classify("BGA", "BOG", cal, "COP", PLAIN, LEVELS, [], TODAY)
+    f = fares([100_000] * 40 + [500_000] * 140)  # barato cerca, carísimo lejos
+    v = classify(R, f, "COP", PLAIN, LEVELS, [], TODAY)
     assert v.normal == 500_000 and v.near_normal == 100_000 and v.savings_percent == 0
 
 
-def test_feeder_same_day_day_before_or_estimate(history):
-    history.record(make_result("BGA", "BOG", [90_000, 70_000, 95_000]), NOW)
-    d1 = (TODAY + timedelta(days=2)).isoformat()
-    assert feeder_cost(history, "BGA", "BOG", d1, TODAY) == (70_000, d1, False)
-    d2 = (TODAY + timedelta(days=4)).isoformat()
-    assert feeder_cost(history, "BGA", "BOG", d2, TODAY) == (95_000, (TODAY + timedelta(days=3)).isoformat(), False)
-    far = (TODAY + timedelta(days=250)).isoformat()  # fuera del calendario del tramo: se estima
-    assert feeder_cost(history, "BGA", "BOG", far, TODAY) == (90_000, None, True)
-    assert feeder_cost(history, "BGA", "BGA", d1, TODAY) is None
+def test_feeder_matches_the_trip_dates(history, config):
+    feeder = config.feeder_route("BOG", 1)
+    assert feeder == Route("BGA", "BOG", (6, 16), 1)  # noches internacionales + margen para salir antes y volver después
+    out, back = _iso(50), _iso(58)  # 8 noches
+    f = {
+        (out, back): 200_000.0,
+        (_iso(49), _iso(59)): 180_000.0,  # sale el día anterior y vuelve el siguiente: encaja y es más barato
+        (_iso(49), back): 190_000.0,
+        (_iso(90), _iso(98)): 500_000.0,
+    }
+    history.record(RouteResult(feeder, f), NOW)
+    assert feeder_cost(history, feeder, out, back, TODAY) == (180_000, _iso(49), _iso(59), False)
+    # sin fechas que encajen: se estima con el precio normal de la conexión
+    assert feeder_cost(history, feeder, _iso(120), _iso(128), TODAY) == (195_000, None, None, True)
+    assert feeder_cost(history, Route("BGA", "XXX", (6, 16), 1), out, back, TODAY) is None
+
+
+def test_enrich_adds_feeder_and_other_bag_price(history, config):
+    zone = config.zone("Perú, Ecuador, Bolivia y Venezuela")
+    r = zone.route("BOG", "LIM")
+    assert r.bags == 1 and r.nights == (6, 14)
+    out, back = _iso(50), _iso(58)
+    history.record(RouteResult(config.feeder_route("BOG", 1), {(_iso(49), _iso(59)): 150_000.0}), NOW)
+    history.record(RouteResult(r.other_bags, {(out, back): 400_000.0}), NOW, partial=True)
+    v = classify(r, {(out, back): 500_000.0} | fares([900_000] * 30, nights=(6, 14)), "COP", zone, LEVELS, [], TODAY)
+    v = enrich(v, history, config, TODAY)
+    assert v.level == SUPER and v.feeder_price == 150_000 and v.total == 650_000
+    assert (v.feeder_out, v.feeder_back, v.feeder_origin) == (_iso(49), _iso(59), "BGA")
+    assert v.other_bag_price == 400_000
 
 
 def test_best_per_destination_prefers_lowest_total(history, config):
     zone = config.zone("Perú, Ecuador, Bolivia y Venezuela")
-    history.record(make_result("BGA", "BOG", [150_000] * 5), NOW)
-    history.record(make_result("BGA", "MDE", [90_000] * 5), NOW)
-    a = with_feeder(classify("BOG", "LIM", calendar([600_000, 500_000]), "COP", zone, LEVELS, [], TODAY), history, "BGA", TODAY)
-    b = with_feeder(classify("MDE", "LIM", calendar([600_000, 520_000]), "COP", zone, LEVELS, [], TODAY), history, "BGA", TODAY)
+    out, back = _iso(50), _iso(57)
+    history.record(RouteResult(config.feeder_route("BOG", 1), {(out, back): 150_000.0}), NOW)
+    history.record(RouteResult(config.feeder_route("MDE", 1), {(out, back): 90_000.0}), NOW)
+    a = enrich(classify(zone.route("BOG", "LIM"), {(out, back): 500_000.0, (_iso(60), _iso(67)): 600_000.0}, "COP", zone, LEVELS, [], TODAY), history, config, TODAY)
+    b = enrich(classify(zone.route("MDE", "LIM"), {(out, back): 520_000.0, (_iso(60), _iso(67)): 600_000.0}, "COP", zone, LEVELS, [], TODAY), history, config, TODAY)
     assert a.total == 650_000 and b.total == 610_000
     assert best_per_destination([a, b])[0].origin == "MDE"
+
+
+def test_classify_from_history_ignores_partial_searches(history):
+    other = route(bags=1)
+    history.record(RouteResult(other, fares([100_000] * 5)), NOW, partial=True)
+    assert classify_from_history(PLAIN, other, history, LEVELS, TODAY) is None
+    history.record(RouteResult(R, fares([100_000] * 5)), NOW)
+    assert classify_from_history(PLAIN, R, history, LEVELS, TODAY).price == 100_000
