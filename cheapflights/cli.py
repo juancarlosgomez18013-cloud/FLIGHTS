@@ -207,6 +207,8 @@ class _Runner:
             jobs = [(v.route.base.other_bags, *window_around(v.out, zone.nights, start, end)) for v in verdicts if not v.armado]
             self.search(jobs, partial=True)
         for result in one_way_results:
+            if result.route.origin not in zone.origins:
+                continue  # un regreso suelto (ej. San Andrés → Bucaramanga) solo sirve dentro de un viaje armado
             past = self.history.runs_before_current_fares(result.route.key)
             v = classify(result.route, result.fares, result.currency, zone, self.config.levels, past, self.today)
             if v:
@@ -219,7 +221,7 @@ class _Runner:
             how = f" · armado: ida {fmt_price(v.legs[0], v.currency)} + regreso {fmt_price(v.legs[1], v.currency)}" if v.armado else ""
             click.echo(f"   {name}: {fmt_price(v.price, v.currency)} · {when}{_bags_note(v)}{how} {LEVEL_ICON[v.level]}".rstrip())
         found = {(v.origin, v.destination, v.one_way) for v in enriched}
-        for r in routes + zone.one_way_routes():
+        for r in routes + zone.outbound_one_way_routes():
             if (r.origin, r.destination, r.one_way) not in found:
                 arrow = "→" if r.one_way else "⇄"
                 click.echo(f"   {self.config.city(r.origin)} {arrow} {self.config.city(r.destination)}{' (solo ida)' if r.one_way else ''}: sin precios")
@@ -262,6 +264,10 @@ def run_zones(
     in_trips |= {(v.route.base.inbound.pair, v.back) for v in supers if v.armado}
     supers = [v for v in supers if not (v.one_way and (v.pair, v.out) in in_trips)]
     super_keys = {v.alert_key for v in supers}
+    # Avisos viejos de regresos sueltos (antes se avisaban): se olvidan.
+    hubs = {o for z in config.zones for o in z.origins}
+    for key in [k for k in history.data["alerts"] if k.startswith("solo-ida:") and k.split(":", 1)[1].split("-")[0] not in hubs]:
+        history.clear_alert(key)
     for key in searched_keys - super_keys:
         history.clear_alert(key)  # la oferta ya no está: si vuelve, se avisa otra vez
     to_send = [v for v in supers if history.should_alert(v.alert_key, v.price, config.alerts.repeat_if_drops_percent)]

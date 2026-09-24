@@ -21,7 +21,7 @@ def verdicts_for_kind(config: Config, history: History, kind: str, now: datetime
     found: list[Verdict] = []
     newest = None
     for zone in config.zones_of_kind(kind):
-        for route in zone.routes() + zone.one_way_routes():
+        for route in zone.routes() + zone.outbound_one_way_routes():
             seen = history.last_seen(route.key)
             if seen and (newest is None or seen > newest):
                 newest = seen
