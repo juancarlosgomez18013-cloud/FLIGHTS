@@ -4,3 +4,5 @@ __pycache__/
 venv/
 .pytest_cache/
 .env
+# El historial vive en la rama `datos` (ver README)
+data/history.json

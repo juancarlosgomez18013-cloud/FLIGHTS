@@ -105,10 +105,11 @@ search:
   max_days_ahead: 300
   both_bag_prices: true         # consultar también el precio con la otra maleta
                                 # (solo alrededor de cada oferta; pocas peticiones extra)
-  parallel_requests: 3          # peticiones a Google a la vez dentro de una búsqueda
-  requests_per_second: 2        # tope global de peticiones por segundo (Google bloquea si se le insiste)
-  rate_limit_wait_seconds: 90   # si Google bloquea (HTTP 429), esperar esto y reintentar…
-  rate_limit_max_waits: 3       # …hasta tantas veces por corrida; después se guarda lo logrado y se para
+  parallel_requests: 1          # peticiones a Google a la vez (1 = sin ráfagas; Google frena las ráfagas)
+  requests_per_second: 1        # tope global de peticiones por segundo
+  rate_limit_wait_seconds: 120  # si Google bloquea (con error o en silencio), esperar esto y reintentar…
+  rate_limit_max_waits: 3       # …hasta tantas veces por corrida; después se guarda lo logrado y la
+                                #    próxima corrida empieza por lo que quedó pendiente
 
 # Conexiones desde casa hacia los aeropuertos internacionales. Se buscan
 # ida y vuelta con las fechas del viaje y se suman para dar el total.

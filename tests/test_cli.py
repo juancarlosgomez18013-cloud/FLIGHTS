@@ -206,3 +206,43 @@ def test_return_legs_alone_are_never_alerted_nor_listed(config, history, monkeyp
 
     by_kind, _ = summary_data(config, history, NOW)
     assert all(v.pair != "ADZ-BGA" for v in by_kind["domestic"])
+
+
+def test_least_recently_searched_zone_goes_first(config, history):
+    from cheapflights.notify import ConsoleNotifier
+
+    calls = []
+    bogota, amazonas = config.zone("Bogotá"), config.zone("Amazonas")
+    run_zones(config, [bogota], history, _searcher(DEALS, calls), ConsoleNotifier(), delay=0, now=NOW)
+    calls.clear()
+    run_zones(config, [bogota, amazonas], history, _searcher(DEALS, calls), ConsoleNotifier(), delay=0, now=NOW + timedelta(hours=1))
+    assert calls[0][0].startswith("BGA-LET")  # Amazonas nunca se había buscado: va primero
+
+
+def test_partial_block_is_not_a_failure_but_total_block_is(tmp_path, monkeypatch):
+    def partial(seed=0):
+        calls = []
+
+        def search(route, start, end):
+            calls.append(route.key)
+            if len(calls) > 2:
+                raise RateLimited("HTTP 429")
+            return RouteResult(route, {(start.isoformat(), (start + timedelta(days=2)).isoformat()): 100_000.0})
+
+        return search
+
+    monkeypatch.setattr("cheapflights.cli.mock_searcher", partial)
+    r = _run(tmp_path, "buscar", "--mock", "--dry-run", "--zona", "Costa Caribe")
+    assert r.exit_code == 0 and "próxima corrida empieza por lo que quedó pendiente" in r.output
+
+    def total(seed=0):
+        def search(route, start, end):
+            raise RateLimited("HTTP 429")
+
+        return search
+
+    monkeypatch.setattr("cheapflights.cli.mock_searcher", total)
+    other = tmp_path / "otro"
+    other.mkdir()
+    r = _run(other, "buscar", "--mock", "--dry-run", "--zona", "Costa Caribe")
+    assert r.exit_code == 2 and "no se consiguió ningún precio" in r.output

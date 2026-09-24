@@ -13,6 +13,7 @@ cuando hay algo barato. Corre gratis en GitHub Actions: no necesita servidor ni 
 | 🔥 **Súper barato · solo ida** | Igual | Un tramo solo ida muy barato |
 | ☀️ **Resumen del día** | 7:30 a. m. | Todo lo 🔥 súper barato y 👍 barato de hoy, nacional e internacional |
 | 📅 **Plan de viajes** | Lunes 8:07 a. m. | Lo más barato de cada zona y el mes en que en general es más barato viajar |
+| ⚠️ **Algo falló** | Solo si una tarea falla | Qué falló y el enlace al registro. Se vuelve a intentar sola en su próximo horario |
 
 Precios **ida y vuelta, 1 adulto, por persona**. Cada ruta se consulta **sin maleta** (tarifa
 básica) y **con 1 maleta facturada**, y el aviso muestra los dos precios. De 10 p. m. a 6 a. m.
@@ -178,6 +179,12 @@ python -m cheapflights buscar --mock --dry-run         # prueba sin tocar Google
 pytest
 ```
 
+El historial de precios vive en la rama `datos`. Para usarlo en tu máquina:
+
+```bash
+git fetch origin datos && git show FETCH_HEAD:history.json > data/history.json
+```
+
 Para enviar desde tu máquina, exporta las mismas variables que los secretos.
 
 ## Cómo funciona por dentro
@@ -188,7 +195,7 @@ config.yaml ─▶ buscar ─▶ search.py (Google Flights: precio de cada ida y
                            ▼
                    levels.classify ─▶ 🔥 / 👍 / nada   (+ otra maleta, + conexión, + festivos)
                            │
-                   history.record ──▶ data/history.json (commit automático)
+                   history.record ──▶ data/history.json ──▶ rama `datos` (se reescribe)
                            │
                    🔥 nuevos ───────▶ messages.py ─▶ notify.py (Telegram / WhatsApp / ntfy)
       resumen / plan ─▶ summary.py ─┘
@@ -199,7 +206,10 @@ trozos (45 días de ida para 2-5 noches, 20 días para 6-14) con hasta `parallel
 peticiones a la vez, un tope global de `requests_per_second` y una pausa de
 `request_delay_seconds` entre rutas. Si Google responde HTTP 429, la corrida espera
 `rate_limit_wait_seconds` y reintenta (hasta `rate_limit_max_waits` veces) antes de rendirse.
-La corrida internacional completa tarda unos 35 minutos; la nacional, unos 10.
+Por defecto va a una petición por segundo y sin ráfagas, porque Google frena las ráfagas en
+silencio. La corrida internacional tarda unos 50 minutos y la nacional unos 10. Si Google corta
+una corrida a mitad de camino, se guarda lo buscado y la siguiente empieza por lo que quedó
+pendiente; solo cuenta como falla (y te avisa) si no se consiguió ningún precio.
 
 ## Problemas conocidos
 
@@ -212,5 +222,8 @@ La corrida internacional completa tarda unos 35 minutos; la nacional, unos 10.
   tarifa de 1 maleta facturada; confirma en el enlace antes de comprar.
 - **Tiquetes separados** en los viajes armados y en la conexión desde Bucaramanga: si un vuelo
   se retrasa y pierdes el otro, la otra aerolínea no responde. Deja margen entre vuelos.
-- **El repo crece** con cada búsqueda (commit de `data/history.json`). Es normal. El historial de
-  la versión anterior (solo ida) no es comparable y se descartó al pasar a ida y vuelta.
+- **El historial** se guarda en la rama `datos` como un solo commit que se reescribe en cada
+  búsqueda, así el repositorio no crece con el tiempo.
+- **Minutos de GitHub Actions:** con el repositorio público son ilimitados. Si es privado, el plan
+  gratis trae unos 2.000 minutos al mes y este bot usa cerca de esa cifra; si se acaban, las
+  búsquedas se detienen hasta el mes siguiente.
