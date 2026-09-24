@@ -84,8 +84,8 @@ def test_other_bag_is_searched_only_around_the_deal(config, history):
 
     calls = []
     run_zones(config, [config.zone("Bogotá")], history, _searcher(DEALS, calls), ConsoleNotifier(), delay=0, now=NOW)
-    assert [c[0] for c in calls] == ["BGA-BOG/2-5n/0m", "BGA-BOG/2-5n/1m", "BGA-BOG/ida/0m", "BOG-BGA/ida/0m"]
-    full, partial = calls[:2]
+    assert [c[0] for c in calls] == ["BGA-BOG/2-5n/0m", "BGA-BOG/ida/0m", "BOG-BGA/ida/0m", "BGA-BOG/2-5n/1m"]
+    full, partial = calls[0], calls[3]
     assert (full[2] - full[1]).days + 1 == 180  # 6 meses de fechas de ida
     assert (partial[2] - partial[1]).days + 1 == 45 and partial[1] == full[1]  # una sola petición, alrededor de la oferta (mañana)
     assert history.is_partial("BGA-BOG/2-5n/1m") and not history.is_partial("BGA-BOG/2-5n/0m")
@@ -165,18 +165,22 @@ def test_zonas_lists_city_names(tmp_path):
     assert "2-5 noches" in r.output and "con maleta facturada" in r.output and "Conexión desde casa" in r.output
 
 
-def test_two_one_ways_cheaper_than_round_trip_shows_in_alert(config, history):
-    # ida y vuelta a 60.000 el primer día; solo ida: ida 20.000 y regreso 25.000 (dos días después)
-    prices = {"BGA-BOG": [60_000] + [124_000] * 40}
+def test_armado_trip_wins_and_its_legs_are_not_alerted_twice(config, history, monkeypatch):
+    monkeypatch.setattr("cheapflights.cli.is_real", lambda n: isinstance(n, RealNotifier))
+    # ida y vuelta normal: $124.000 todos los días; ida suelta $20.000 un día y regreso $25.000 tres días después
+    ida_day, back_day = TODAY + timedelta(days=5), TODAY + timedelta(days=8)
 
     def search(route, start, end):
-        if route.one_way:
-            day = {"BGA-BOG": 0, "BOG-BGA": 2}[route.pair]
-            d = (TODAY + timedelta(days=1 + day)).isoformat()
-            price = 20_000.0 if route.pair == "BGA-BOG" else 25_000.0
-            return RouteResult(route, {(d, d): price} | {((TODAY + timedelta(days=i)).isoformat(),) * 2: 70_000.0 for i in range(5, 40)})
-        return _searcher(prices)(route, start, end)
+        if not route.one_way:
+            return _searcher({"BGA-BOG": [124_000] * 60})(route, start, end)
+        cheap_day, price = (ida_day, 20_000.0) if route.pair == "BGA-BOG" else (back_day, 25_000.0)
+        f = {((TODAY + timedelta(days=i)).isoformat(),) * 2: 90_000.0 for i in range(1, 60)}
+        f[(cheap_day.isoformat(),) * 2] = price
+        return RouteResult(route, f)
 
     n = RealNotifier()
-    run_zones(config, [config.zone("Bogotá")], history, search, n, delay=0, now=NOW)
-    assert "dos tramos solo ida: $45.000" in n.sent[0]
+    r = run_zones(config, [config.zone("Bogotá")], history, search, n, delay=0, now=NOW)
+    assert [v.alert_key for v in r.alerted] == ["BOG"]  # un solo aviso: el viaje armado, sin repetir sus tramos
+    assert r.alerted[0].legs == (20_000, 25_000) and r.alerted[0].price == 45_000
+    assert "VIAJE ARMADO" in n.sent[0] and "🛫 Ida:" in n.sent[0]
+    assert history.runs("BGA-BOG/2-5n/0m/armado")[-1]["min_price"] == 45_000

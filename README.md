@@ -9,7 +9,8 @@ cuando hay algo barato. Corre gratis en GitHub Actions: no necesita servidor ni 
 | Mensaje | Cuándo | Qué trae |
 |---|---|---|
 | 🔥 **Súper barato** | Apenas lo encuentra (Colombia cada 6 h, internacional cada mañana) | Ruta, precio ida y vuelta, fechas de ida y regreso, precio con y sin maleta, si cae en puente, cuánto ahorras y enlace para ver el viaje |
-| 🔥 **Súper barato · solo ida** | Igual, solo en Colombia | Un tramo solo ida muy barato, de Bucaramanga o de regreso a Bucaramanga |
+| 🔥 **Súper barato · viaje armado** | Igual | Ida barata y regreso barato comprados por separado, aunque sean de aerolíneas distintas |
+| 🔥 **Súper barato · solo ida** | Igual | Un tramo solo ida muy barato |
 | ☀️ **Resumen del día** | 7:30 a. m. | Todo lo 🔥 súper barato y 👍 barato de hoy, nacional e internacional |
 | 📅 **Plan de viajes** | Lunes 8:07 a. m. | Lo más barato de cada zona y el mes en que en general es más barato viajar |
 
@@ -105,11 +106,27 @@ comentado en español.
 - **Conexión desde Bucaramanga.** Para los internacionales se busca Bucaramanga ⇄ Bogotá y
   Bucaramanga ⇄ Medellín, ida y vuelta, y se suma el tramo que encaja con las fechas: sale el mismo
   día o el anterior y vuelve el mismo día o el siguiente.
-- **Solo ida (Colombia).** Además del ida y vuelta, se buscan tramos solo ida en los dos sentidos
-  (Bucaramanga → destino y destino → Bucaramanga). Si un tramo está súper barato llega un aviso
-  🔥 "solo ida", y si armar el viaje con dos tramos sueltos sale más barato que el ida y vuelta,
-  el aviso lo dice: `✂️ Armado con dos tramos solo ida: $130.000 (ahorras $50.000)`. Se activa o
-  desactiva con `one_way` (general o por zona).
+- **Viaje armado.** Además del ida y vuelta, se buscan tramos solo ida en los dos sentidos
+  (ej. Bucaramanga → Cartagena y Cartagena → Bucaramanga, o Bogotá → Madrid y Madrid → Bogotá).
+  Para cada destino se combina la ida más barata con el regreso más barato en cualquier fecha que
+  cuadre con las noches, aunque sean de aerolíneas distintas, y se compara con el ida y vuelta
+  normal. Te llega un solo aviso por destino, con lo más barato de los dos:
+
+  ```
+  🔥 SÚPER BARATO · VIAJE ARMADO
+  🏖️ Cartagena · $118.000 ida y regreso
+  Normalmente $320.000 · ahorras 63 %
+
+  🛫 Ida: vie 30 oct · $52.000
+  🛬 Regreso: lun 2 nov · $66.000 (3 noches)
+  🎉 Puente: lun 2 nov, Todos los Santos
+  🎒 Sin maleta
+  ℹ️ Son dos tiquetes separados: pueden ser de aerolíneas distintas.
+  👉 Ver ida · Ver regreso
+  ```
+
+  Si solo un tramo está súper barato, llega un aviso "🔥 solo ida". Se activa o desactiva con
+  `one_way` en `config.yaml` (general o por zona).
 - **Puentes.** Los festivos de Colombia se calculan solos (incluida la Ley Emiliani y la Semana
   Santa) y el aviso marca los viajes que caen en uno.
 
@@ -182,7 +199,7 @@ trozos (45 días de ida para 2-5 noches, 20 días para 6-14) con hasta `parallel
 peticiones a la vez, un tope global de `requests_per_second` y una pausa de
 `request_delay_seconds` entre rutas. Si Google responde HTTP 429, la corrida espera
 `rate_limit_wait_seconds` y reintenta (hasta `rate_limit_max_waits` veces) antes de rendirse.
-La corrida internacional completa tarda unos 15 a 20 minutos; la nacional, unos 10.
+La corrida internacional completa tarda unos 35 minutos; la nacional, unos 10.
 
 ## Problemas conocidos
 
@@ -193,8 +210,7 @@ La corrida internacional completa tarda unos 15 a 20 minutos; la nacional, unos 
   y Clic a veces no (por eso Apartadó u Olaya Herrera pueden salir sin precios).
 - **Precio por persona, sin silla.** El precio "con maleta" es el que Google calcula sumando la
   tarifa de 1 maleta facturada; confirma en el enlace antes de comprar.
-- **Tiquetes separados** en los combos internacionales: si pierdes la conexión desde Bucaramanga,
-  la aerolínea internacional no responde. El sistema prefiere salir el día anterior cuando es más
-  barato o igual.
+- **Tiquetes separados** en los viajes armados y en la conexión desde Bucaramanga: si un vuelo
+  se retrasa y pierdes el otro, la otra aerolínea no responde. Deja margen entre vuelos.
 - **El repo crece** con cada búsqueda (commit de `data/history.json`). Es normal. El historial de
   la versión anterior (solo ida) no es comparable y se descartó al pasar a ida y vuelta.

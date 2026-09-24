@@ -43,15 +43,19 @@ bags:
   domestic: false            # escapada corta: con la maleta de mano basta
   international: true        # viaje largo: casi siempre se lleva maleta
 
-# ── Solo ida (además de ida y vuelta) ────────────────────────────────
+# ── Solo ida y viajes armados (además de ida y vuelta) ───────────────
 #  true = también busca vuelos solo ida en los dos sentidos
-#  (Bucaramanga → destino y destino → Bucaramanga). Sirve para:
-#    · avisarte 🔥 cuando un tramo solo ida está súper barato
-#    · decirte si armar el viaje con dos tramos sueltos sale más barato
-#  Se puede cambiar por zona con `one_way: false`.
+#  (ej. Bucaramanga → Cartagena y Cartagena → Bucaramanga). Sirve para:
+#    · armar el viaje con una ida barata y un regreso barato, aunque sean
+#      de aerolíneas distintas, en cualquier fecha que cuadre con las
+#      noches. Para cada destino se avisa lo más barato: el ida y vuelta
+#      normal o el viaje armado.
+#    · avisarte 🔥 cuando un tramo solo ida está súper barato.
+#  Internacional tarda más (unos 35 minutos en vez de 17). Se puede
+#  cambiar por zona con `one_way: false`.
 one_way:
   domestic: true
-  international: false
+  international: true
 
 # ── Cómo se decide qué es barato ─────────────────────────────────────
 #
