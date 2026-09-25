@@ -1,9 +1,8 @@
 name: Plan semanal
 
+# El plan de los lunes lo manda el goteo junto con el resumen de las 7:30 a. m. (las tareas
+# programadas de GitHub llegan horas tarde). Esto es solo para mandarlo a mano.
 on:
-  schedule:
-    # Lunes 13:07 UTC = 8:07 a. m. hora Colombia (minuto poco congestionado en GitHub)
-    - cron: "7 13 * * 1"
   workflow_dispatch:
 
 jobs:

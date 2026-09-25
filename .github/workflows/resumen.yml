@@ -1,9 +1,8 @@
 name: Resumen diario
 
+# El resumen de las 7:30 a. m. lo manda el goteo apenas pasa la hora (las tareas programadas de
+# GitHub llegan horas tarde). Esto es solo para mandarlo a mano: Actions → Resumen diario → Run workflow.
 on:
-  schedule:
-    # Todos los días 12:30 UTC = 7:30 a. m. hora Colombia
-    - cron: "30 12 * * *"
   workflow_dispatch:
 
 jobs:

@@ -11,8 +11,8 @@ cuando hay algo barato. Corre gratis en GitHub Actions: no necesita servidor ni 
 | 🔥 **Súper barato** | Apenas lo encuentra (cada ruta de Colombia se revisa cada 6 h; internacional cada 24 h) | Ruta, precio ida y vuelta, fechas de ida y regreso, precio con y sin maleta, si cae en puente, cuánto ahorras y enlace para ver el viaje |
 | 🔥 **Súper barato · viaje armado** | Igual | Ida barata y regreso barato comprados por separado, aunque sean de aerolíneas distintas |
 | 🔥 **Súper barato · solo ida** | Igual | Un tramo solo ida muy barato |
-| ☀️ **Resumen del día** | 7:30 a. m. | Todo lo 🔥 súper barato y 👍 barato de hoy, nacional e internacional |
-| 📅 **Plan de viajes** | Lunes 8:07 a. m. | Lo más barato de cada zona y el mes en que en general es más barato viajar |
+| ☀️ **Resumen del día** | 7:30 a. m. (llega entre 7:30 y 8:00) | Todo lo 🔥 súper barato y 👍 barato de hoy, nacional e internacional |
+| 📅 **Plan de viajes** | Lunes, junto con el resumen | Lo más barato de cada zona y el mes en que en general es más barato viajar |
 | ⚠️ **Algo falló** | Solo si una tarea falla | Qué falló y el enlace al registro. Se vuelve a intentar sola en su próximo horario |
 
 Precios **ida y vuelta, 1 adulto, por persona**. Cada ruta se consulta **sin maleta** (tarifa
@@ -155,17 +155,19 @@ costar salir por esas fechas (la mediana de esos precios, a ±30 días de la ofe
 
 | Qué | Cuándo |
 |---|---|
-| Búsqueda (goteo) | Todo el día: una tanda cada ~hora con las rutas que ya tocan, máximo 10 |
+| Búsqueda (goteo) | Todo el día: una tanda cada ~media hora con las rutas que ya tocan, máximo 6 |
 | Cada ruta de Colombia | Se vuelve a buscar cada 6 horas |
 | Cada ruta internacional | Se vuelve a buscar cada 24 horas |
-| Resumen del día | 7:30 a. m. |
-| Plan de viajes | Lunes 8:07 a. m. |
+| Resumen del día | 7:30 a. m. (llega entre 7:30 y 8:00) |
+| Plan de viajes | Lunes, junto con el resumen |
 
 El goteo reparte las búsquedas en el día en vez de hacer pocas corridas grandes: así no hay
-ráfagas, que es lo que hace que Google frene. Cada tarea de GitHub dura unas 4 horas y hace 5
-tandas separadas por 50 minutos, porque el reloj de GitHub se atrasa hasta 3 horas; el horario
-de cada hora solo deja lista la siguiente tarea para que arranque apenas termine la anterior. Si Google bloquea, la siguiente hora sigue con lo
-pendiente; solo te llega un "⚠️" si pasan 12 horas sin conseguir ningún precio.
+ráfagas, que es lo que hace que Google frene. Cada tarea de GitHub dura unas 3-4 horas y hace 7
+tandas separadas por 25 minutos, porque el reloj de GitHub se atrasa hasta 3 horas; el horario
+de cada hora solo deja lista la siguiente tarea para que arranque apenas termine la anterior. Por
+lo mismo, el resumen y el plan no tienen horario propio en GitHub: los manda la primera tanda
+después de las 7:30 a. m. Si Google bloquea, la siguiente tanda sigue con lo pendiente; solo te
+llega un "⚠️" si pasan 12 horas sin conseguir ningún precio.
 
 Las búsquedas completas (todas las rutas de una vez) se pueden lanzar a mano: **Actions** →
 **Vuelos Colombia (completa, a mano)** o **Vuelos internacionales (completa, a mano)** →
