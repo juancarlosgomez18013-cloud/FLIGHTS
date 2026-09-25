@@ -1,8 +1,9 @@
 name: Vuelos (goteo)
 
-# Goteo: una tarea de unas 4 horas que hace 5 tandas pequeñas, una cada ~hora. Cada tanda busca
-# solo las rutas que ya "tocan" (Colombia cada 6 horas, internacional cada 24), las más atrasadas
-# primero y máximo 10. Así nunca hay ráfagas grandes, que es lo que hace que Google frene.
+# Goteo: una tarea de unas 3-4 horas que hace 7 tandas pequeñas, una cada ~media hora. Cada tanda
+# busca solo las rutas que ya "tocan" (Colombia cada 6 horas, internacional cada 24), las más
+# atrasadas primero y máximo 6. Así nunca hay ráfagas grandes, que es lo que hace que Google frene.
+# La primera tanda después de las 7:30 a. m. manda también el resumen del día (y los lunes el plan).
 #
 # El ritmo lo lleva la propia tarea porque el reloj de GitHub se atrasa hasta 3 horas. El horario
 # de abajo es solo el respaldo: mientras una tarea corre, la siguiente queda en espera y arranca
@@ -29,7 +30,7 @@ jobs:
     uses: ./.github/workflows/_run.yml
     with:
       command: buscar --goteo
-      repeat: 5
-      pause_minutes: 50
+      repeat: 7
+      pause_minutes: 25
       timeout_minutes: 330
     secrets: inherit

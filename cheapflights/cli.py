@@ -390,6 +390,41 @@ def _finish(notifier: Notifier, sent: tuple[int, int]) -> None:
         sys.exit(3)
 
 
+def _summary_messages(config: Config, history: History, now: datetime) -> list[str]:
+    by_kind, stale = summary_data(config, history, now)
+    return format_summary(config, by_kind, config.local_today(now), stale)
+
+
+def _plan_messages(config: Config, history: History, now: datetime) -> list[str]:
+    return format_plan(config, plan_rows(config, history, now), config.local_today(now))
+
+
+SCHEDULED = {"resumen": _summary_messages, "plan": _plan_messages}
+
+
+def due_scheduled(config: Config, history: History, now: datetime) -> list[str]:
+    """Mensajes programados que ya tocan: el resumen diario desde `summary.send_at` y, los lunes, el plan.
+
+    Los manda el goteo (corre todo el día) porque las tareas programadas de GitHub llegan horas tarde.
+    """
+    local = config.local_now(now)
+    if local.time() < config.summary.send_time:
+        return []
+    today, sent = local.date().isoformat(), history.data.get("sent_on", {})
+    due = ["resumen"] + (["plan"] if local.weekday() == 0 else [])
+    return [name for name in due if sent.get(name) != today]
+
+
+def send_scheduled(config: Config, history: History, notifier: Notifier, now: datetime) -> None:
+    """Envía los mensajes programados que tocan y los marca como enviados hoy (si llegaron todos)."""
+    for name in due_scheduled(config, history, now):
+        ok, total = send_all(notifier, SCHEDULED[name](config, history, now))
+        report_sending(notifier, ok, total)
+        if is_real(notifier) and ok == total:
+            history.data.setdefault("sent_on", {})[name] = config.local_today(now).isoformat()
+            history.save()
+
+
 def _should_alert_outage(config: Config, history: History, now: datetime) -> bool:
     """Goteo: avisar ⚠️ solo si hace rato no llega ningún precio, y como máximo una vez por ese lapso."""
     hours = config.search.alert_after_hours_without_prices
@@ -410,7 +445,7 @@ def _should_alert_outage(config: Config, history: History, now: datetime) -> boo
 @click.option("--dry-run", is_flag=True, help="No envía; imprime los mensajes")
 @click.option("--mock", is_flag=True, help="No consulta Google; usa precios inventados")
 @click.option("--delay", type=float, default=None, help="Segundos entre búsquedas")
-@click.option("--goteo", is_flag=True, help="Solo las rutas que ya tocan (máx. max_routes_per_run), para correr cada hora")
+@click.option("--goteo", is_flag=True, help="Solo las rutas que ya tocan (máx. max_routes_per_run), para correr cada ~media hora")
 @click.pass_obj
 def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: float | None, goteo: bool) -> None:
     """Busca precios de ida y vuelta, guarda el historial y avisa lo 🔥 súper barato."""
@@ -418,7 +453,9 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
     history: History = obj["history"]
     zones = _select_zones(config, kind, zone)
     now = datetime.now(timezone.utc)
+    notifier = _notifier(config, dry_run)
     if goteo:
+        send_scheduled(config, history, notifier, now)
         zones = due_zones(config, zones, history, now, config.search.max_routes_per_run)
         if not zones:
             click.echo("💤 Nada pendiente: todas las rutas se buscaron hace poco.")
@@ -431,7 +468,6 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
         requests_per_second=config.search.requests_per_second,
         backoff=Backoff(config.search.rate_limit_wait_seconds, config.search.rate_limit_max_waits),
     )
-    notifier = _notifier(config, dry_run)
     feeders_age = 0.8 * config.search.refresh_hours_international if goteo else None
     report = run_zones(config, zones, history, searcher, notifier, delay=0 if mock else delay,
                        now=now, feeders_max_age_hours=feeders_age)
@@ -465,9 +501,7 @@ def buscar(obj, kind: str, zone: str | None, dry_run: bool, mock: bool, delay: f
 def resumen(obj, dry_run: bool) -> None:
     """☀️ Resumen diario: lo 🔥 súper barato y 👍 barato de hoy."""
     config: Config = obj["config"]
-    now = datetime.now(timezone.utc)
-    by_kind, stale = summary_data(config, obj["history"], now)
-    messages = format_summary(config, by_kind, config.local_today(now), stale)
+    messages = _summary_messages(config, obj["history"], datetime.now(timezone.utc))
     notifier = _notifier(config, dry_run)
     _finish(notifier, send_all(notifier, messages))
 
@@ -478,8 +512,7 @@ def resumen(obj, dry_run: bool) -> None:
 def plan(obj, dry_run: bool) -> None:
     """📅 Plan semanal: lo más barato por zona y el mes más barato para viajar."""
     config: Config = obj["config"]
-    now = datetime.now(timezone.utc)
-    messages = format_plan(config, plan_rows(config, obj["history"], now), config.local_today(now))
+    messages = _plan_messages(config, obj["history"], datetime.now(timezone.utc))
     notifier = _notifier(config, dry_run)
     _finish(notifier, send_all(notifier, messages))
 

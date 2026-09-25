@@ -99,6 +99,8 @@ summary:
   max_per_section: 8            # máximo de destinos por sección
   extra_dates: 3                # cuántas otras fechas baratas mostrar por destino
   send_when_empty: true         # si no hay nada barato, igual manda un mensaje corto
+  send_at: "07:30"              # hora Colombia; lo manda la primera búsqueda después de esa hora
+                                #    (los lunes llega también el plan de viajes)
 
 search:
   request_delay_seconds: 2.0    # pausa entre búsquedas (rutas) para que Google no bloquee
@@ -110,10 +112,10 @@ search:
   rate_limit_wait_seconds: 120  # si Google bloquea (con error o en silencio), esperar esto y reintentar…
   rate_limit_max_waits: 3       # …hasta tantas veces por corrida; después se guarda lo logrado y la
                                 #    próxima corrida empieza por lo que quedó pendiente
-  # Modo goteo: una corrida pequeña cada hora con las rutas que ya "tocan"
+  # Modo goteo: una corrida pequeña cada ~media hora con las rutas que ya "tocan"
   refresh_hours_domestic: 6     # cada cuántas horas se vuelve a buscar una ruta de Colombia
   refresh_hours_international: 24  # y una internacional
-  max_routes_per_run: 10        # máximo de rutas por corrida (sin ráfagas)
+  max_routes_per_run: 6         # máximo de rutas por corrida (sin ráfagas)
   retry_empty_hours: 3          # una ruta que nunca ha dado precio se reintenta cada 3 horas
                                 #    (una búsqueda vacía no cuenta como "ya buscada")
   alert_after_hours_without_prices: 12  # te aviso ⚠️ solo si pasan tantas horas sin ningún precio

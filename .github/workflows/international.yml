@@ -1,7 +1,7 @@
 name: Vuelos internacionales (completa, a mano)
 
 # Búsqueda completa de todas las rutas internacionales de una vez (unos 50 minutos). Ya no corre
-# sola: las búsquedas automáticas las hace el goteo cada hora (goteo.yml). Útil para lanzarla a
+# sola: las búsquedas automáticas las hace el goteo cada ~media hora (goteo.yml). Útil para lanzarla a
 # mano: Actions → "Vuelos internacionales (completa, a mano)" → Run workflow.
 on:
   workflow_dispatch:

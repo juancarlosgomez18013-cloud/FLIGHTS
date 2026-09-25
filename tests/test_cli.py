@@ -291,7 +291,7 @@ def test_goteo_cli_does_nothing_when_nothing_is_due(tmp_path, monkeypatch):
     assert r.exit_code == 0 and "Nada pendiente" in r.output
     monkeypatch.setattr("cheapflights.cli.due_zones", real)
     r = _run(tmp_path, "buscar", "--goteo", "--mock", "--dry-run")
-    assert r.exit_code == 0 and "💧 Goteo: 10 ruta(s)" in r.output
+    assert r.exit_code == 0 and "💧 Goteo: 6 ruta(s)" in r.output
 
 
 def test_goteo_outage_alerts_only_after_hours_without_prices(config, history):
@@ -321,3 +321,37 @@ def test_goteo_empty_results_do_not_count_as_fresh(config, history):
         history.record(RouteResult(eje.route("BGA", d), {}), NOW - timedelta(hours=4 if d == "PEI" else 1))
     picked = sorted(r.destination for z in due_zones(config, [costa, eje], history, NOW, limit=10) for r in z.routes())
     assert picked == ["CTG", "PEI"]
+
+
+def test_goteo_sends_summary_once_a_day_after_send_at(config, history, monkeypatch):
+    """El resumen lo manda el goteo apenas pasan las 7:30 (GitHub atrasa sus horarios); los lunes, también el plan."""
+    from datetime import datetime, timezone
+
+    from cheapflights.cli import due_scheduled, send_scheduled
+
+    monkeypatch.setattr("cheapflights.cli.is_real", lambda n: isinstance(n, RealNotifier))
+    thursday_7am = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)  # 7:00 a. m. hora Colombia
+    assert due_scheduled(config, history, thursday_7am) == []  # todavía no es la hora
+    n = RealNotifier()
+    send_scheduled(config, history, n, thursday_7am + timedelta(minutes=45))  # 7:45 a. m.
+    assert len(n.sent) == 1 and history.data["sent_on"] == {"resumen": "2026-09-24"}
+    send_scheduled(config, history, n, thursday_7am + timedelta(hours=3))  # la tanda siguiente no lo repite
+    assert len(n.sent) == 1
+    assert due_scheduled(config, history, thursday_7am + timedelta(days=1)) == []  # viernes 7:00: aún no
+    assert due_scheduled(config, history, thursday_7am + timedelta(days=1, minutes=30)) == ["resumen"]
+    monday = thursday_7am + timedelta(days=4, minutes=40)
+    assert due_scheduled(config, history, monday) == ["resumen", "plan"]
+
+
+def test_goteo_retries_summary_if_it_did_not_arrive(config, history, monkeypatch):
+    from datetime import datetime, timezone
+
+    from cheapflights.cli import due_scheduled, send_scheduled
+
+    monkeypatch.setattr("cheapflights.cli.is_real", lambda n: isinstance(n, RealNotifier))
+    at = datetime(2026, 9, 24, 13, 0, tzinfo=timezone.utc)
+    send_scheduled(config, history, RealNotifier(fail_on={1}), at)
+    assert due_scheduled(config, history, at) == ["resumen"]  # falló el envío: la próxima tanda lo reintenta
+    from cheapflights.notify import ConsoleNotifier
+    send_scheduled(config, history, ConsoleNotifier(), at)
+    assert due_scheduled(config, history, at) == ["resumen"]  # sin canal real no se marca como enviado

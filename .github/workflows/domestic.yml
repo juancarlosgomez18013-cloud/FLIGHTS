@@ -1,7 +1,7 @@
 name: Vuelos Colombia (completa, a mano)
 
 # Búsqueda completa de todas las rutas de Colombia de una vez. Ya no corre sola: las búsquedas
-# automáticas las hace el goteo cada hora (goteo.yml). Útil para lanzarla a mano:
+# automáticas las hace el goteo cada ~media hora (goteo.yml). Útil para lanzarla a mano:
 # Actions → "Vuelos Colombia (completa, a mano)" → Run workflow.
 on:
   workflow_dispatch:

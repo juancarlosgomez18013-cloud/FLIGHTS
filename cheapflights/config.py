@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass, field, fields
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -30,10 +30,10 @@ class SearchSettings:
     requests_per_second: int = 2  # tope global de peticiones por segundo
     rate_limit_wait_seconds: float = 90.0  # si Google bloquea (429), cuánto esperar antes de reintentar
     rate_limit_max_waits: int = 3  # cuántas esperas por corrida antes de rendirse
-    # Modo goteo (buscar --goteo): una corrida pequeña cada hora con las rutas que ya "tocan"
+    # Modo goteo (buscar --goteo): una corrida pequeña cada ~media hora con las rutas que ya "tocan"
     refresh_hours_domestic: float = 6.0  # cada cuánto se vuelve a buscar una ruta de Colombia
     refresh_hours_international: float = 24.0  # y una internacional
-    max_routes_per_run: int = 10  # tope de rutas por corrida (sin ráfagas)
+    max_routes_per_run: int = 6  # tope de rutas por corrida (sin ráfagas)
     retry_empty_hours: float = 3.0  # una ruta que nunca ha dado precio se reintenta cada tanto
     alert_after_hours_without_prices: float = 12.0  # avisar ⚠️ solo si pasan tantas horas sin precios
 
@@ -67,6 +67,12 @@ class SummarySettings:
     max_per_section: int = 8
     extra_dates: int = 3
     send_when_empty: bool = True
+    send_at: str = "07:30"  # hora Colombia; los lunes llega también el plan semanal
+
+    @property
+    def send_time(self) -> time:
+        hour, minute = (int(x) for x in str(self.send_at).split(":"))
+        return time(hour, minute)
 
 
 @dataclass(frozen=True)
@@ -283,6 +289,10 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
             raw_alerts["quiet_hours"] = (start, end)
     alerts = AlertSettings(**raw_alerts)
     summary = SummarySettings(**(raw.get("summary") or {}))
+    try:
+        summary.send_time
+    except ValueError:
+        raise ValueError(f"summary.send_at: hora inválida {summary.send_at!r} (usa HH:MM, ej. \"07:30\")") from None
 
     origins_by_kind = raw.get("origins") or {}
     months_by_kind = raw.get("months_ahead") or {}
