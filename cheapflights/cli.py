@@ -250,17 +250,32 @@ def _last_run(history: History, key: str) -> datetime | None:
     return parse_ts(runs[-1]["seen_at"]) if runs else None
 
 
+NEVER_PRICED_TRIES = 3  # tras tantas búsquedas vacías seguidas, una ruta sin vuelos se reintenta una vez al día
+
+
 def _key_overdue(history: History, key: str, now: datetime, every_hours: float, retry_empty_hours: float) -> float | None:
-    """Qué tan vencida está una búsqueda (≥ 1 = toca). Cuenta desde el último precio real:
-    una búsqueda que volvió vacía (p. ej. por un bloqueo de Google) no la deja "fresca".
-    Nunca con precio: se reintenta cada `retry_empty_hours`. None = nunca buscada."""
+    """Qué tan vencida está una búsqueda (≥ 1 = toca). None = nunca buscada.
+
+    Cuenta desde el último precio real, pero si la última búsqueda volvió vacía (sin vuelos o un
+    bloqueo de Google) se espera `retry_empty_hours` antes de repetirla: así una ruta que no
+    responde no se queda con todas las tandas. Nunca con precio: cada `retry_empty_hours` y,
+    tras varios intentos, una vez al día (p. ej. rutas que no existen, como Bucaramanga–Apartadó).
+    """
     runs = history.runs(key)
     if not runs:
         return None
+
+    def hours_since(run: dict) -> float:
+        return (now - parse_ts(run["seen_at"])).total_seconds() / 3600
+
     priced = [r for r in runs if r.get("min_price")]
-    if priced:
-        return (now - parse_ts(priced[-1]["seen_at"])).total_seconds() / 3600 / every_hours
-    return (now - parse_ts(runs[-1]["seen_at"])).total_seconds() / 3600 / retry_empty_hours
+    if not priced:
+        retry = retry_empty_hours if len(runs) < NEVER_PRICED_TRIES else max(retry_empty_hours, 24.0)
+        return hours_since(runs[-1]) / retry
+    overdue = hours_since(priced[-1]) / every_hours
+    if not runs[-1].get("min_price"):
+        overdue = min(overdue, hours_since(runs[-1]) / retry_empty_hours)
+    return overdue
 
 
 def _pair_overdue(config: Config, history: History, zone: Zone, origin: str, destination: str, now: datetime) -> float:
@@ -375,7 +390,9 @@ def run_zones(
 @click.pass_context
 def cli(ctx: click.Context, config_path: str, history_path: str, verbose: bool) -> None:
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
-    ctx.obj = {"config": load_config(config_path), "history": History.load(Path(history_path))}
+    config, history = load_config(config_path), History.load(Path(history_path))
+    history.clean(config.currency)
+    ctx.obj = {"config": config, "history": history}
 
 
 def _notifier(config: Config, dry_run: bool) -> Notifier:

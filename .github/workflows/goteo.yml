@@ -5,9 +5,10 @@ name: Vuelos (goteo)
 # atrasadas primero y máximo 6. Así nunca hay ráfagas grandes, que es lo que hace que Google frene.
 # La primera tanda después de las 7:30 a. m. manda también el resumen del día (y los lunes el plan).
 #
-# El ritmo lo lleva la propia tarea porque el reloj de GitHub se atrasa hasta 3 horas. El horario
-# de abajo es solo el respaldo: mientras una tarea corre, la siguiente queda en espera y arranca
-# apenas termine, así nunca queda un hueco. Ajustes en config.yaml (search).
+# El ritmo lo lleva la propia tarea porque el reloj de GitHub se atrasa y a veces se salta horas
+# enteras. Al terminar, cada tarea lanza la siguiente (job "siguiente"), así nunca queda un hueco.
+# El horario de abajo es solo el respaldo por si la cadena se corta (p. ej. si una tarea falla).
+# Ajustes en config.yaml (search).
 on:
   schedule:
     - cron: "23 * * * *"   # respaldo: deja lista la siguiente tarea
@@ -34,3 +35,16 @@ jobs:
       pause_minutes: 25
       timeout_minutes: 330
     secrets: inherit
+
+  siguiente:
+    # Encadena la siguiente tarea apenas termina esta. Solo si salió bien: si falla, el horario de
+    # respaldo la reintenta (así un error repetido no se convierte en una ráfaga de avisos).
+    needs: goteo
+    if: needs.goteo.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - run: gh workflow run goteo.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}

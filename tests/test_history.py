@@ -80,3 +80,16 @@ def test_alert_once_then_only_if_cheaper_or_reappears(history):
     history.clear_alert("BOG")  # la oferta desapareció
     assert history.should_alert("BOG", 100_000, 5)  # si vuelve, se avisa de nuevo
     assert history.should_alert("MDE", 100_000, 5)
+
+
+def test_clean_drops_other_currency_routes_and_garbage_minimums(history):
+    good = make_result("BOG", "BCN", prices=[4_400_000] * 10)
+    history.record(good, NOW - timedelta(days=2))
+    history.record(RouteResult(good.route, {**good.fares, ("2026-12-15", "2026-12-22"): 1_120.0}), NOW - timedelta(days=1))
+    lim = make_result("BOG", "LIM", prices=[480] * 5)
+    history.record(RouteResult(lim.route, lim.fares, currency="USD"), NOW)
+    assert min(history.fares(good.route.key).values()) == 4_400_000  # al leer ya se ignora la basura
+    history.clean("COP")
+    assert not history.has_route(lim.route.key)  # guardada en dólares: se busca de nuevo
+    assert [r["min_price"] for r in history.runs(good.route.key)] == [4_400_000]
+    assert history.best(good.route.key)["price"] == 4_400_000

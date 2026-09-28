@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .search import Fares, Route, RouteResult, nights_between
+from .search import IMPLAUSIBLE_FRACTION, Fares, Route, RouteResult, drop_implausible, nights_between
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ class History:
         entry = self.data["routes"].get(key)
         if not entry or "nights" not in entry:
             return {}
-        return unpack_fares(entry.get("fares"), tuple(entry["nights"]))
+        return drop_implausible(unpack_fares(entry.get("fares"), tuple(entry["nights"])))
 
     def is_partial(self, key: str) -> bool:
         return bool(self.data["routes"].get(key, {}).get("partial"))
@@ -173,6 +173,26 @@ class History:
         return runs
 
     # -- actualización ------------------------------------------------------
+    def clean(self, currency: str) -> None:
+        """Borra lo que dejaron errores de Google en búsquedas viejas: rutas guardadas en otra moneda
+        y mínimos absurdamente bajos frente a lo normal de la ruta (ver `drop_implausible`)."""
+        routes = self.data["routes"]
+        for key in [k for k, e in routes.items() if e.get("currency", currency) != currency]:
+            del routes[key]
+        for entry in routes.values():
+            medians = [r["median_price"] for r in entry.get("runs", []) if r.get("median_price")]
+            if not medians:
+                continue
+            floor = statistics.median(medians) * IMPLAUSIBLE_FRACTION
+            entry["runs"] = [r for r in entry["runs"] if not (r.get("min_price") and r["min_price"] < floor)]
+            for name in ("best", "last"):
+                if entry.get(name) and entry[name]["price"] < floor:
+                    entry[name] = None
+            priced = [r for r in entry["runs"] if r.get("min_price")]
+            if entry.get("best") is None and priced:
+                r = min(priced, key=lambda r: r["min_price"])
+                entry["best"] = {"price": r["min_price"], "out": r["min_out"], "back": r["min_back"], "seen_at": r["seen_at"]}
+
     def record(self, result: RouteResult, now: datetime | None = None, partial: bool = False, store_fares: bool = True) -> None:
         """Guarda una búsqueda. `partial`: solo una ventana pequeña (no cuenta como corrida completa).
         `store_fares=False`: solo el resumen (mínimos), p. ej. el viaje armado, que se recalcula de sus partes."""
