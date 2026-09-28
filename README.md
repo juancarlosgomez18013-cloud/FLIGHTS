@@ -163,11 +163,16 @@ costar salir por esas fechas (la mediana de esos precios, a ±30 días de la ofe
 
 El goteo reparte las búsquedas en el día en vez de hacer pocas corridas grandes: así no hay
 ráfagas, que es lo que hace que Google frene. Cada tarea de GitHub dura unas 3-4 horas y hace 7
-tandas separadas por 25 minutos, porque el reloj de GitHub se atrasa hasta 3 horas; el horario
-de cada hora solo deja lista la siguiente tarea para que arranque apenas termine la anterior. Por
-lo mismo, el resumen y el plan no tienen horario propio en GitHub: los manda la primera tanda
-después de las 7:30 a. m. Si Google bloquea, la siguiente tanda sigue con lo pendiente; solo te
-llega un "⚠️" si pasan 12 horas sin conseguir ningún precio.
+tandas separadas por 25 minutos, y al terminar lanza ella misma la siguiente: el reloj de GitHub
+se atrasa y a veces se salta horas enteras, así que su horario de cada hora queda solo de
+respaldo. Por lo mismo, el resumen y el plan no tienen horario propio en GitHub: los manda la
+primera tanda después de las 7:30 a. m. Si Google bloquea, la siguiente tanda sigue con lo
+pendiente; solo te llega un "⚠️" si pasan 12 horas sin conseguir ningún precio.
+
+Una búsqueda que vuelve vacía (sin vuelos o un bloqueo) se repite a las 3 horas, no en la tanda
+siguiente, para que una ruta que no responde no se quede con todas las tandas. Una ruta que nunca
+ha tenido vuelos (ej. Bucaramanga–Apartadó) se intenta una vez al día. Los precios que Google
+devuelve en otra moneda o absurdamente bajos (errores suyos, como Barcelona a $1.120) se descartan.
 
 Las búsquedas completas (todas las rutas de una vez) se pueden lanzar a mano: **Actions** →
 **Vuelos Colombia (completa, a mano)** o **Vuelos internacionales (completa, a mano)** →

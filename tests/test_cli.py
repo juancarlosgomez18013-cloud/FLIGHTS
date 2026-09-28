@@ -256,6 +256,10 @@ def _seen(history, zone, origin, dest, when):
                                    if route.one_way else {(_iso5(), _iso7()): 1.0}), when)
 
 
+def make_rt(route):
+    return RouteResult(route, {(_iso5(), _iso7()): 1.0})
+
+
 def _iso5():
     return (TODAY + timedelta(days=5)).isoformat()
 
@@ -305,22 +309,62 @@ def test_goteo_outage_alerts_only_after_hours_without_prices(config, history):
     assert _should_alert_outage(config, history, later + timedelta(hours=13))  # y de nuevo 12 h después
 
 
-def test_goteo_empty_results_do_not_count_as_fresh(config, history):
-    """Una búsqueda que volvió vacía (bloqueo de Google) no deja la ruta "fresca"."""
+def test_goteo_empty_results_count_as_fresh_only_for_a_while(config, history):
+    """Una búsqueda vacía (sin vuelos o bloqueo de Google) no deja la ruta fresca por 6 h, solo por 3 h."""
     from cheapflights.cli import due_zones
 
     costa = config.zone("Costa Caribe")
     for d in costa.destinations:
-        _seen(history, costa, "BGA", d, NOW - timedelta(hours=1))
-    r = costa.route("BGA", "CTG")
-    _seen(history, costa, "BGA", "CTG", NOW - timedelta(hours=8))  # tuvo precio hace 8 h…
-    history.record(RouteResult(r, {}), NOW - timedelta(hours=1))  # …y la última (hace 1 h) volvió vacía
-    history.record(RouteResult(costa.route("BGA", "BAQ"), {}), NOW - timedelta(hours=1))  # BAQ: precio hace 1 h, sigue fresca
+        if d not in ("CTG", "SMR"):
+            _seen(history, costa, "BGA", d, NOW - timedelta(hours=1))
+    for d, empty_ago in (("CTG", 4), ("SMR", 1)):  # la ida y vuelta tuvo precio hace 8 h y la última volvió vacía
+        _seen(history, costa, "BGA", d, NOW - timedelta(hours=8))
+        r = costa.route("BGA", d)
+        for leg in (r.outbound, r.inbound):  # los tramos solo ida están al día
+            history.record(RouteResult(leg, {(_iso5(), _iso5()): 1.0}), NOW - timedelta(hours=1))
+        history.record(RouteResult(r, {}), NOW - timedelta(hours=empty_ago))
     eje = config.zone("Eje Cafetero")
     for d in eje.destinations:  # nunca han dado precio: se reintentan cada 3 horas
         history.record(RouteResult(eje.route("BGA", d), {}), NOW - timedelta(hours=4 if d == "PEI" else 1))
     picked = sorted(r.destination for z in due_zones(config, [costa, eje], history, NOW, limit=10) for r in z.routes())
-    assert picked == ["CTG", "PEI"]
+    assert picked == ["CTG", "PEI"]  # SMR esperó apenas 1 h desde la vacía
+
+
+def test_goteo_does_not_get_stuck_on_a_route_whose_legs_come_back_empty(config, history):
+    """Caso real: Medellín–Roma solo ida dio precio una vez y después siempre vacío; el goteo la
+    repetía en cada tanda y el resto de rutas se quedaba sin buscar."""
+    from cheapflights.cli import due_zones
+
+    europa = config.zone("Europa")
+    for o in europa.origins:
+        for d in europa.destinations:
+            _seen(history, europa, o, d, NOW - timedelta(hours=1))
+    _seen(history, europa, "MDE", "FCO", NOW - timedelta(days=3))
+    r = europa.route("MDE", "FCO")
+    history.record(make_rt(r), NOW - timedelta(minutes=30))  # la ida y vuelta acaba de dar precio…
+    for leg in (r.outbound, r.inbound):  # …y los tramos solo ida acaban de volver vacíos
+        history.record(RouteResult(leg, {}), NOW - timedelta(minutes=30))
+    assert due_zones(config, [europa], history, NOW, limit=6) == []
+    later = [(z.origins[0], d) for z in due_zones(config, [europa], history, NOW + timedelta(hours=3), limit=6) for d in z.destinations]
+    assert later == [("MDE", "FCO")]  # 3 h después se reintentan los tramos
+
+
+def test_goteo_retries_routes_without_flights_once_a_day_after_a_few_tries(config, history):
+    from cheapflights.cli import due_zones
+
+    antioquia = config.zone("Medellín y Antioquia")
+    for d in antioquia.destinations:
+        _seen(history, antioquia, "BGA", d, NOW - timedelta(hours=1))
+    apo = antioquia.route("BGA", "APO")
+    for key in (apo.key, apo.outbound.key, apo.inbound.key):
+        history.data["routes"].pop(key)
+    for hours in (30, 20, 10):  # tres búsquedas vacías: Bucaramanga–Apartadó no tiene vuelos
+        history.record(RouteResult(apo, {}), NOW - timedelta(hours=hours))
+    def due(at):
+        return [d for z in due_zones(config, [antioquia], history, at, limit=6) for d in z.destinations]
+
+    assert "APO" not in due(NOW) and "APO" not in due(NOW + timedelta(hours=13))  # antes tocaba cada 3 h
+    assert "APO" in due(NOW + timedelta(hours=15))  # 25 h después de la última: una vez al día
 
 
 def test_goteo_sends_summary_once_a_day_after_send_at(config, history, monkeypatch):

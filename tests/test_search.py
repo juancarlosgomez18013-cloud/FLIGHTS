@@ -10,6 +10,7 @@ from cheapflights.search import (
     Route,
     RouteResult,
     chunk_days,
+    drop_implausible,
     n_durations,
     search_routes,
     window_around,
@@ -129,3 +130,14 @@ def test_quiet_block_that_does_not_lift_stops_the_run():
     with pytest.raises(RateLimited) as exc:
         search_routes(_jobs("CTG", "BAQ", "SMR", "RCH"), searcher, guard=guard)
     assert "bloqueo silencioso" in str(exc.value) and exc.value.partial[0].route.destination == "CTG"
+
+
+def test_drop_implausible_removes_google_garbage_but_keeps_real_deals():
+    """Google a veces devuelve un trozo de fechas en dólares (1.120 en vez de 4.400.000)."""
+    fares = {(f"2026-12-{d:02d}", f"2026-12-{d + 7:02d}"): 4_400_000.0 for d in range(1, 11)}
+    fares[("2026-12-15", "2026-12-22")] = 1_120.0  # basura
+    fares[("2026-12-16", "2026-12-23")] = 1_300_000.0  # oferta real (−70 %): se queda
+    clean = drop_implausible(fares)
+    assert ("2026-12-15", "2026-12-22") not in clean
+    assert clean[("2026-12-16", "2026-12-23")] == 1_300_000.0
+    assert drop_implausible({("a", "b"): 1.0}) == {("a", "b"): 1.0}  # con muy pocos precios no se juzga

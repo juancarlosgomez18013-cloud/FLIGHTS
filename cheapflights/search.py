@@ -11,6 +11,7 @@ combinación (fecha de ida, fecha de regreso) dentro del rango de noches.
 from __future__ import annotations
 
 import logging
+import statistics
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -25,9 +26,22 @@ Fares = dict[tuple[str, str], float]  # ("YYYY-MM-DD" ida, "YYYY-MM-DD" vuelta) 
 MAX_COMBOS_PER_REQUEST = 180
 MAX_DAYS_PER_REQUEST = 61  # límite de fli/Google para una sola duración
 
+# Un precio por debajo de esta fracción de la mediana de su misma búsqueda es un error de Google
+# (p. ej. un trozo de fechas que vino en dólares: 1.120 en vez de 4.400.000). Ni las tarifas de
+# error reales bajan un 90 %.
+IMPLAUSIBLE_FRACTION = 0.1
+
 
 def nights_between(out: str, back: str) -> int:
     return (date.fromisoformat(back) - date.fromisoformat(out)).days
+
+
+def drop_implausible(fares: Fares) -> Fares:
+    """Quita los precios absurdamente bajos frente al resto de la misma búsqueda (errores de Google)."""
+    if len(fares) < 5:
+        return fares
+    floor = statistics.median(fares.values()) * IMPLAUSIBLE_FRACTION
+    return {k: p for k, p in fares.items() if p >= floor}
 
 
 def n_durations(nights: tuple[int, int]) -> int:
@@ -279,18 +293,21 @@ def google_searcher(
         )
         prices = backoff.run(lambda: call_google(filters))
         fares: Fares = {}
-        seen_currency = currency
+        other_currency = 0
         for p in prices:
             if not p.price or p.price <= 0 or len(p.date) != (1 if route.one_way else 2):
+                continue
+            if p.currency and p.currency != currency:  # Google a veces responde parte o todo en dólares
+                other_currency += 1
                 continue
             out = p.date[0].date().isoformat()
             back = out if route.one_way else p.date[1].date().isoformat()
             if not lo <= nights_between(out, back) <= hi:
                 continue
             fares[(out, back)] = min(fares.get((out, back), p.price), float(p.price))
-            if p.currency:
-                seen_currency = p.currency
-        return RouteResult(route=route, fares=fares, currency=seen_currency)
+        if other_currency:
+            logger.warning("%s: Google devolvió %d precio(s) en otra moneda; se descartan.", route, other_currency)
+        return RouteResult(route=route, fares=drop_implausible(fares), currency=currency)
 
     return search
 
